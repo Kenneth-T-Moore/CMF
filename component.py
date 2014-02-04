@@ -103,7 +103,7 @@ class Component(object):
     def _apply_dCdv(self, arguments):
         pass
 
-    def _apply_dCdv_T(self, arguments)):
+    def _apply_dCdv_T(self, arguments):
         pass
 
     def _evaluate_C_inv(self):
@@ -131,7 +131,8 @@ class Component(object):
 
     def _scatterFull(self, vec, mode='fwd'):
         vec1, vec = self._getVec(vec, mode)
-        self.scatterFull.scatter(vec1, vec2, addv = mode, mode = mode)
+        if self.scatterFull is not None:
+            self.scatterFull.scatter(vec1, vec2, addv = mode, mode = mode)
 
     def initialize(self, comm=MPI.COMM_WORLD):
         self._initializeSizes(comm)
@@ -227,16 +228,16 @@ class ExplicitVariable(SimpleComponent):
         self.cVec[n,c][:] = 0.0
         self._solve(self)
 
-    def _apply_dCdv(self, arguments)):
+    def _apply_dCdv(self, arguments):
         n,c = self.name, self.copy
-        self._apply_Jacobian(self, arguments))
+        self._apply_Jacobian(arguments)
         self.yVec[n,c][:] *= -1.0
         self.yVec[n,c][:] += self.xVec[n,c][None,None][:]
 
-    def _apply_dCdv_T(self, arguments)):
+    def _apply_dCdv_T(self, arguments):
         n,c = self.name, self.copy
         self.yVec[n,c][:] *= -1.0
-        self._apply_Jacobian_T(self, arguments))
+        self._apply_Jacobian_T(arguments)
         self.yVec[n,c][:] *= -1.0
         self.xVec[n,c][None,None][:] += self.yVec[n,c][:]
 
@@ -252,10 +253,10 @@ class IndependentVariable(SimpleComponent):
         self.cVec[n,c][:] = 0.0
         self.vVec[n,c][:] = self.value[:]
 
-    def _apply_dCdv(self, arguments)):
+    def _apply_dCdv(self, arguments):
         self.yVec[n,c][:] = self.xVec[n,c][None,None][:]
 
-    def _apply_dCdv_T(self, arguments)):
+    def _apply_dCdv_T(self, arguments):
         self.xVec[n,c][None,None][:] += self.yVec[n,c][:]
 
     def _evaluate_C_inv(self):
@@ -341,7 +342,7 @@ class MultiComponent(Component):
         self.scattersFwd = []
         self.scattersRev = []
         varIndsFull = []
-        ArgIndsFull = []
+        argIndsFull = []
         for i in xrange(len(self.subComps)):
             varIndsFwd = []
             argIndsFwd = []
@@ -361,8 +362,8 @@ class MultiComponent(Component):
                         argIndsRev.append(argInds)
                     varIndsFull.append(varInds)
                     argIndsFull.append(argInds)
-            self.partialScattersFwd.append(createScatter(varIndsFwd, argIndsFwd))
-            self.partialScattersRev.append(createScatter(varIndsRev, argIndsFwd))
+            self.scattersFwd.append(createScatter(varIndsFwd, argIndsFwd))
+            self.scattersRev.append(createScatter(varIndsRev, argIndsFwd))
         self.scatterFull = createScatter(varIndsFull, argIndsFull)
         
     def _initializeDomVecsDown(self):
@@ -387,11 +388,11 @@ class MultiComponent(Component):
 
     def _scatterFwd(self, i, vec, mode='fwd'):
         vec1, vec = self._getVec(vec, mode)
-        self.scatterFwd[i].scatter(vec1, vec2, addv = rev, mode = rev)
+        self.scattersFwd[i].scatter(vec1, vec2, addv = rev, mode = rev)
 
     def _scatterRev(self, i, vec, mode='fwd'):
         vec1, vec = self._getVec(vec, mode)
-        self.scatterRev[i].scatter(vec1, vec2, addv = rev, mode = rev)
+        self.scattersRev[i].scatter(vec1, vec2, addv = rev, mode = rev)
 
 
 
@@ -489,7 +490,6 @@ class ParallelComponent(MultiComponent):
         subComp._evaluate_C_inv()
         self._localCopy(subComp, 'vVec', 'up')
         
-
 
 
 class SerialComponent(MultiComponent):
