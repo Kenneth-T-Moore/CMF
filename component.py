@@ -17,14 +17,14 @@ class Component(object):
                 copy = 0 if len(inp) is 1 else self.copy if inp[1] is -1 else inp[1]
                 return inp[0],copy
 
-        class OrderedDict1(OrderedDict0):            
+        class OrderedDictDomVec(OrderedDict0):            
             def __call__(self, var, arg=None):
                 if arg is None:
                     return self[self._ID(var)][None,None]
                 else:
                     return self[self._ID(var)][self._ID(arg)]
 
-        class OrderedDict2(OrderedDict0):
+        class OrderedDictCodVec(OrderedDict0):
             def __call__(self, var):
                 return self[self._ID(var)]
 
@@ -36,10 +36,10 @@ class Component(object):
         self.variables = OrderedDict()
         self.arguments = OrderedDict()
 
-        self.vVec = OrderedDict1(copy)
-        self.xVec = OrderedDict1(copy)
-        self.cVec = OrderedDict2(copy)
-        self.yVec = OrderedDict2(copy)
+        self.vVec = OrderedDictDomVec(copy)
+        self.xVec = OrderedDictDomVec(copy)
+        self.cVec = OrderedDictCodVec(copy)
+        self.yVec = OrderedDictCodVec(copy)
 
     def _initializeSizes(self, comm):
         self.comm = comm
@@ -130,9 +130,13 @@ class Component(object):
             raise Exception('mode type not recognized')
 
     def _scatterFull(self, vec, mode='fwd'):
-        vec1, vec = self._getVec(vec, mode)
+        vec1, vec2 = self._getVec(vec, mode)
         if self.scatterFull is not None:
-            self.scatterFull.scatter(vec1, vec2, addv = mode, mode = mode)
+            if mod is 'rev':
+                vec1.array[:] = 0.0
+            else:
+                vec2.array[:] = 0.0
+            self.scatterFull.scatter(vec1, vec2, addv = True, mode = mode is 'rev')
 
     def initialize(self, comm=MPI.COMM_WORLD):
         self._initializeSizes(comm)
@@ -257,19 +261,18 @@ class IndependentVariable(SimpleComponent):
         self.yVec[n,c][:] = self.xVec[n,c][None,None][:]
 
     def _apply_dCdv_T(self, arguments):
-        self.xVec[n,c][None,None][:] += self.yVec[n,c][:]
+        self.xVec[n,c][None,None][:] = self.yVec[n,c][:]
 
     def _evaluate_C_inv(self):
         n,c = self.name, self.copy
         self.vVec[n,c][:] = self.value[:]
 
     def _apply_dCdv_inv(self):
-        self.yVec[n,c][:] = self.xVec[n,c][None,None][:]
+        self.xVec[n,c][None,None][:] = self.yVec[n,c][:]
 
     def _apply_dCdv_inv_T(self):
-        self.xVec[n,c][None,None][:] = self.yVec[n,c][:]
-        
-                
+        self.yVec[n,c][:] = self.xVec[n,c][None,None][:]
+
 
 
 class MultiComponent(Component):
@@ -388,11 +391,41 @@ class MultiComponent(Component):
 
     def _scatterFwd(self, i, vec, mode='fwd'):
         vec1, vec = self._getVec(vec, mode)
-        self.scattersFwd[i].scatter(vec1, vec2, addv = rev, mode = rev)
+        self.scattersFwd[i].scatter(vec1, vec2, addv = True, mode = rev)
 
     def _scatterRev(self, i, vec, mode='fwd'):
         vec1, vec = self._getVec(vec, mode)
-        self.scattersRev[i].scatter(vec1, vec2, addv = rev, mode = rev)
+        self.scattersRev[i].scatter(vec1, vec2, addv = True, mode = rev)
+
+    def _localZero(self, vec):
+        if vec is 'vVec':
+            self.vVec[n,c][None,None][:] = 0.0
+        elif vec is 'xVec':
+            self.xVec[n,c][None,None][:] = 0.0
+        elif vec is 'cVec':
+            self.cVec[n,c][:] = 0.0
+        elif vec is 'yVec':
+            self.yVec[n,c][:] = 0.0
+        else:
+            raise Exception('Vec type not recognized')
+
+    def _localCopy(self, subComp, vec, mode='up'):
+        if mode is 'up':
+            compFrom, compTo = subComp, self
+        elif mode is 'down':
+            compTo, compFrom = subComp, self
+        else:
+            raise Exception('mode type not recognized')
+
+        if vec is 'vVec':
+            vecFrom, vecTo = compFrom.vVec, compTo.vVec
+        elif vec is 'xVec':
+            vecFrom, vecTo = compFrom.xVec, compTo.xVec
+        else:
+            raise Exception('Vec type not recognized')
+
+        for n,c in subComp.variables:
+            vecTo[n,c][None,None][:] = vecFrom[n,c][None,None][:]
 
 
 
@@ -420,7 +453,8 @@ class ParallelComponent(MultiComponent):
         self.iSubComp = self.color[self.rank]
         self.numProcs = numProcs
         child_comm = self.comm.Split(self.iSubComp)
-        self.subComps[self.iSubComp]._initializeSizes(child_comm)
+        self.mySubComp = self.subComps[self.iSubComp]
+        self.mySubComp._initializeSizes(child_comm)
 
     def _initializeVarSizes(self):
         numVars = numpy.array([len(subComp.variables) for subComp in self.subComps], int)
@@ -439,57 +473,42 @@ class ParallelComponent(MultiComponent):
             counter += 1
 
     def _initializeSubCompCommunication(self):
-        self.subComps[self.iSubComp]._initializeCommunication()
+        self.mySubComp._initializeCommunication()
 
     def _initializeSubCompVecs(self):
-        self.subComps[self.iSubComp]._initializeVecs()
-
-    def _localCopy(self, subComp, vec, mode='up'):
-        if mode is 'up':
-            compFrom, compTo = subComp, self
-        elif mode is 'down':
-            compTo, compFrom = subComp, self
-        else:
-            raise Exception('mode type not recognized')
-
-        if vec is 'vVec':
-            vecFrom, vecTo = compFrom.vVec, compTo.vVec
-        elif vec is 'xVec':
-            vecFrom, vecTo = compFrom.xVec, compTo.xVec
-        elif vec is 'cVec':
-            vecFrom, vecTo = compFrom.cVec, compTo.cVec
-        elif vec is 'yVec':
-            vecFrom, vecTo = compFrom.yVec, compTo.yVec
-        else:
-            raise Exception('Vec type not recognized')
-
-        for n,c in subComp.variables:
-            vecTo(n,c)[:] = vecFrom(n,c)[:]
+        self.mySubComp._initializeVecs()
 
     def _evaluate_C(self):
-        self.subComps[self.iSubComp]._evaluate_C()
+        self.mySubComp._evaluate_C()
 
     def _apply_dCdv(self, arguments):
+        self._localCopy(self.mySubComp, 'xVec', 'down')
         self._scatterFull('xVec', 'fwd')
-        subComp = self.subComps[self.iSubComp]
-        subComp.yVecPETSc.array[:] = 0.0
-        subComp._apply_dCdv(arguments)
-        self._localCopy(subComp, 'yVec', 'up')
+        self.mySubComp._apply_dCdv(arguments)
 
     def _apply_dCdv_T(self, arguments):
-        subComp = self.subComps[self.iSubComp]
-        subComp.xVecPETSc.array[:] = 0.0
-        subComp._apply_dCdv_T(arguments)
+        self.mySubComp._apply_dCdv_T(arguments)
+        self._localCopy(self.mySubComp, 'xVec', 'up')
         self._scatterFull('xVec', 'rev')
-        self._localCopy(subComp, 'yVec', 'up')
 
-    def _nonlinearJacobi(self):
+    def _NLsolve_parallel(self):
         self._scatterFull('vVec', 'fwd')
-        self._localCopy(subComp, 'vVec', 'down')
-        subComp = self.subComps[self.iSubComp]
-        subComp._evaluate_C_inv()
-        self._localCopy(subComp, 'vVec', 'up')
-        
+        self._localCopy(self.mySubComp, 'vVec', 'down')
+        self.mySubComp._evaluate_C_inv()
+        self._localCopy(self.mySubComp, 'vVec', 'up')
+
+    def _precond_parallel(self):
+        self.mySubComp._apply_dCdv_inv()
+        self._localCopy(self.mySubComp, 'xVec', 'up')
+
+    def _precond_parallel_T(self):
+        self._localCopy(self.mySubComp, 'xVec', 'down')
+        self.mySubComp._apply_dCdv_inv_T()(arguments)
+
+    def _getArgs_hollow(self):
+        variables = self.mySubComp.variables
+        return [(n,c) for n,c in self.variables if (n,c) not in variables]
+
 
 
 class SerialComponent(MultiComponent):
@@ -521,21 +540,48 @@ class SerialComponent(MultiComponent):
     def _apply_dCdv(self, arguments):
         self._scatterFull('xVec', 'fwd')
         for subComp in self.subComps:
-            subComp.yVecPETSc.array[:] = 0.0
+            self._localCopy(subComp, 'xVec', 'down')
             subComp._apply_dCdv(arguments)
-            self._localCopy(subComp, 'yVec', 'up')
 
     def _apply_dCdv_T(self, arguments):
         for subComp in self.subComps:
-            subComp.xVecPETSc.array[:] = 0.0
             subComp._apply_dCdv_T(arguments)
-            self._scatterFull('xVec', 'rev')
-            self._localCopy(subComp, 'yVec', 'up')
+            self._localCopy(subComp, 'xVec', 'up')
+        self._scatterFull('xVec', 'rev')
 
-    def _nonlinearJacobi(self):
+    def _NLsolve_serial(self):
         for i in xrange(len(self.subComps)):
             subComp = self.subComps[i]
             self._scatterFwd(i, 'vVec', 'fwd')
             self._localCopy(subComp, 'vVec', 'down')
             subComp._evaluate_C_inv()
             self._localCopy(subComp, 'vVec', 'up')
+
+    def _precond_serial(self):
+        for i in xrange(len(self.subComps)):
+            subComp = self.subComps[i]
+            self._scatterFwd(i, 'xVec', 'fwd')
+            for n,c in subComp.variables:
+                subComp.xVec([n,c])[:] = subComp.yVec([n,c])[:]
+            subComp._apply_dCdv(self._getArgs_fwd(i))
+            for n,c in subComp.variables:
+                subComp.yVec([n,c])[:] *= -1.0
+                subComp.yVec([n,c])[:] += subComp.xVec([n,c])[:]
+            subComp._apply_dCdv_inv()
+
+    def _precond_serial_T(self):
+        for i in xrange(len(self.subComps)):
+            subComp = self.subComps[i]
+            self._scatterRev(i, 'xVec', 'rev')
+            for n,c in subComp.variables:
+                subComp.yVec([n,c])[:] -= subComp.xVec([n,c])[:]
+            subComp._apply_dCdv_inv_T()
+            subComp._apply_dCdv_T(self._getArgs_rev(i))            
+
+    def _getArgs_fwd(self, k):
+        comps = self.subComps
+        return [v for i in xrange(k-1) for v in comps[i].variables]
+
+    def _getArgs_rev(self, k):
+        comps = self.subComps
+        return [v for i in xrange(k,len(comps)) for v in comps[i].variables]
