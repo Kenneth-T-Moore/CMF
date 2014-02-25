@@ -9,12 +9,11 @@ from collections import OrderedDict
 class System(object):
     """ Nonlinear system base class """
 
-    def _initializeSystem(self, name, copy, numReqProcs, kwdargs):
+    def _initializeSystem(self, name, copy, numReqProcs):
         """ Method called by __init__ to define basic attributes """
         self.name = name
         self.copy = copy
         self.numReqProcs = numReqProcs
-        self.kwdargs = kwdargs
         self.variables = OrderedDict()
 
         class OrderedDict0(OrderedDict):
@@ -172,7 +171,6 @@ class System(object):
         if system == None:
             scatter = self.scatterFull
         elif mode == 'fwd':
-            vec1, vec2 = vec1, vec2
             scatter = system.scatterFwd
         elif mode == 'rev':
             vec1, vec2 = vec2, vec1
@@ -205,10 +203,11 @@ class System(object):
 class SimpleSystem(System):
     """ Nonlinear system with only one variable """
 
-    def __init__(self, copy=0, **kwdargs):
+    def __init__(self, copy=0, **kwargs):
         """ Defines basic attributes and initializes variables/arguments dicts """
+        self.kwargs = kwargs
         name, numReqProcs = self._declare()
-        self._initializeSystem(name, copy, numReqProcs, kwdargs)
+        self._initializeSystem(name, copy, numReqProcs)
         self.variables[name, copy] = {'size':0, 'args':OrderedDict()}
         self.allsystems = []
 
@@ -216,7 +215,7 @@ class SimpleSystem(System):
         """ Size of the variable vector on the current proc """
         self.variables[self.name, self.copy]['size'] = size
 
-    def _setArgument(self, name, indices=[0], copy=0):
+    def _setArgument(self, name, copy=0, indices=[0]):
         """ Helper method for declaring arguments """
         copy = self.copy if copy == -1 else copy
         arg = self.variables[self.name, self.copy]['args']
@@ -321,11 +320,12 @@ class IndependentVariable(SimpleSystem):
 class CompoundSystem(System):
     """ Nonlinear system with multiple variables; concatenation of subsystems """
 
-    def __init__(self, name, subsystems, copy=0, **kwdargs):
+    def __init__(self, name, subsystems, copy=0, **kwargs):
         """ Defines basic attributes and initializes variables/arguments dicts """
+        self.kwargs = kwargs
         self.subsystems = subsystems
         numReqProcs = numpy.sum([system.numReqProcs for system in subsystems])
-        self._initializeSystem(name, copy, numReqProcs, kwdargs)
+        self._initializeSystem(name, copy, numReqProcs)
 
         for system in subsystems:
             for n,c in system.variables:

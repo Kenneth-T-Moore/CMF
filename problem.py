@@ -9,7 +9,7 @@ import GCMPlib
 class Component(object):
     """ Component base class representing a group of variables """
 
-    def __init__(self, name, copy, **kwargs):
+    def __init__(self, name, copy=0, **kwargs):
         self.name = name
         self.copy = copy
         self._initialize(kwargs)
@@ -21,7 +21,7 @@ class Component(object):
             comp.superComp = self
             comp.iComp = i
 
-        self.varParams = {p:None for p in ['size', 'deg', 'nonlin', 'numArgs']]}
+        self.varParams = {p:None for p in ['size', 'degree', 'nonlin', 'numArgs']}
         for param in self.varParams:
             if param in kwargs:
                 self.varParams[param] = kwargs[param]
@@ -70,7 +70,7 @@ class SimpleComponent(Component):
         self.subComps = []
 
     def _setup1_VarParams(self):
-        defaults = {'size':1, 'deg':2, 'nonlin':0.0, 'numArgs':3}
+        defaults = {'size':1, 'degree':2, 'nonlin':0.0, 'numArgs':3}
         for param in self.varParams:
             if self.varParams[param] is None:
                 self.varParams[param] = defaults[param]
@@ -93,37 +93,68 @@ class SimpleComponent(Component):
         self.scaling = scaling
 
     def _finalize(self):
-        class Var(ImplicitVariable):
+
+        class Variable(ImplicitVariable):
+
             def _declare(self):
                 self.comp = self.kwargs['comp']
                 return self.comp.name, 1
+
             def _declareArguments(self):
-                self.n = self.comp.varParams['size']
+                nGlobal = self.comp.varParams['size']
                 localSizes = numpy.zeros(self.size, int)
                 for i in xrange(self.size):
                     procPctg = 1.0/(self.size-i)
-                    remainingSize = self.n - numpy.sum(localSizes)
+                    remainingSize = nGlobal - numpy.sum(localSizes)
                     localSizes[i] = int(round(procPctg * remainingSize))
-                self.i1 = numpy.sum(localSizes[:self.rank])
-                self.i2 = numpy.sum(localSizes[:self.rank+1])
+                i1 = numpy.sum(localSizes[:self.rank])
+                i2 = numpy.sum(localSizes[:self.rank+1])
                 self._setLocalSize(localSizes[self.rank])
 
+                self.cplFactors = []
+
                 wrap, a, b = self.comp.compParams['struct']
-                coupl = self.comp.compParams['coupl']
+                coupling = self.comp.compParams['coupling']
                 numDeps = self.comp.compParams['numDeps']
                 rands = numpy.array([random.random() for i in xrange(numDeps)])
-                nLocal = self.i2 - self.i1
-                indices, cplFactors = GCMPlib.unknownarg(wrap, a, b, self.i1, self.i2, \
-                                                             self.n, nLocal, numDeps \
-                                                             coupl, rands)
-                self._setArgument(self.name, indices=indices.reshape(nLocal*numDeps, order='F'), self.copy)
+                nLocal = i2 - i1
+                indices, cplFactors = GCMPlib.unknownarg(wrap, a, b, i1, i2, \
+                                                             nGlobal, nLocal, numDeps, \
+                                                             coupling, rands)
+                indices = indices.reshape(nLocal*numDeps, order='F')
+                self._setArgument(self.name, self.copy, indices=indices)
+                self.cplFactors.append(cplFactors)
 
                 args = self.comp.args
                 for (n,c) in args:
-                    indices = numpy.linspace(0, args[n,c][0]-1, args[n,c][0])
-                    self._setArgument(n, indices=indices, c)
+                    nLocal = i2 - i1
+                    indices = GCMPlib.parameterarg(i1, i2, nGlobal, nLocal, \
+                                                       args[n,c][0], numDeps)
+                    indices = indices.reshape(nLocal*numDeps, order='F')
+                    self._setArgument(n, c, indices=indices)
+                    self.cplFactors.append(numpy.ones((nLocal,numDeps), order='F'))
 
-        return Var(self.copy, comp=self)
+                self.cplFactors = numpy.concatenate(self.cplFactors, axis=0)
+                self.i1, self.i2 = i1, i2
+
+            def _evalC(self):
+                nLocal = self.i2 - self.i1
+                degree = self.comp.varParams['degree']
+                nonlin = self.comp.varParams['nonlin']
+                scaling = self.comp.scaling
+                condNum = self.comp.compParams['condNum']
+
+                v = []
+                for (n,c) in self.comp.args:
+                    v.append(self.vVec([n,c]))
+                v = numpy.concatenate(v)
+
+                self.cVec()[:] = GCMPlib.evalc(nLocal, self.cplFactors.shape[1], \
+                                                   self.i1, self.i2, degree, scaling, \
+                                                   condNum, nonlin, self.cplFactors, v)
+                                               
+
+        return Variable(self.copy, comp=self)
 
 
 
@@ -148,8 +179,8 @@ class CompoundComponent(Component):
     def _setup3_AdjGraph(self):
         numDeps = self.compParams['numDeps']
         wrap, a, b = self.compParams['struct']
-        coupl = self.compParams['coupl']
-        n = len(self.subComp)
+        coupling = self.compParams['coupling']
+        n = len(self.subComps)
 
         self.edges = {}
         for i in xrange(n):
@@ -157,11 +188,11 @@ class CompoundComponent(Component):
             js = random.sample(range(i+a,i) + range(i+1,i+b+1), min(b-a, numDeps))
             for j in js:
                 if 0 <= j < n:
-                    self.edges[i][j] = numpy.exp(-coupl * abs(i-j))
+                    self.edges[i][j] = numpy.exp(-coupling * abs(i-j))
                 elif wrap and j < 0:
-                    self.edges[i][j+n] = numpy.exp(-coupl * abs(i-j))
+                    self.edges[i][j+n] = numpy.exp(-coupling * abs(i-j))
                 elif wrap and j >= n:
-                    self.edges[i][j-n] = numpy.exp(-coupl * abs(i-j))
+                    self.edges[i][j-n] = numpy.exp(-coupling * abs(i-j))
 
         for comp in self.subComps:
             comp._setup3_AdjGraph()

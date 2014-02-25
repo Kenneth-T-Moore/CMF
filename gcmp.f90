@@ -47,17 +47,17 @@ end subroutine unknownArg
 
 
 
-subroutine parameterArg(n, i1, i2, nLocal, nArg, numDeps, indices)
+subroutine parameterArg(i1, i2, n, nLocal, nArg, numDeps, indices)
 
   implicit none
 
   !Fortran-python interface directives
-  !f2py intent(in) n, i1, i2, nLocal, nArg, numDeps
+  !f2py intent(in) i1, i2, n, nLocal, nArg, numDeps
   !f2py intent(out) indices
   !f2py depend(nLocal, numDeps) indices
 
   !Input
-  integer, intent(in) ::  n, i1, i2, nLocal, nArg, numDeps
+  integer, intent(in) ::  i1, i2, n, nLocal, nArg, numDeps
 
   !Output
   integer, intent(out) ::  indices(i1:i2-1, numDeps)
