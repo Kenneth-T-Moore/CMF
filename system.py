@@ -6,59 +6,101 @@ from collections import OrderedDict
 
 
 
+class OrderedDict0(OrderedDict):
+    """ An OrderedDict that can infer copy # when not specified """
+
+    def __init__(self, name, copy, system, array):
+        self.name = name
+        self.copy = copy
+        self.system = system
+        self.array = array
+        self.isSimple = system.subsystems is []
+        super(OrderedDict0,self).__init__()
+        self.PETSc = self._initialize()
+
+    def _ID(self, inp):
+        if type(inp) is not list or len(inp) == 1:
+            return inp[0], 0
+        elif inp[1] == -1:
+            return inp[0], self.copy
+        else:
+            return inp[0], inp[1]
+
+class BufferVec(OrderedDict0):
+    """ Domain vecs: assumes [n,c][n,c] when arg not specified """
+
+    def _initialize(self):
+        system = self.system
+        i1, i2 = 0, 0
+        for subsystem in system.localSubsystems:
+            for (n1, c1) in subsystem.variables:
+                self[n1,c1] = OrderedDict()
+                args = subsystem.variables[n1,c1]['args']
+                for (n2, c2) in args:
+                    if (n2, c2) not in subsystem.variables \
+                            and (n2, c2) in system.variables:
+                        i2 += args[n2,c2].shape[0]
+                        self[n1,c1][n2,c2] = self.array[i1:i2]
+                        i1 += args[n2,c2].shape[0]
+        if system.localSubsystems == []:
+            n,c = self.name, self.copy
+            args = system.variables[n,c]['args'] 
+            if (n,c) in args:
+                i2 += args[n,c].shape[0]
+                self[n,c][n,c] = self.array[i1:i2]
+                i1 += args[n,c].shape[0]
+                
+        return PETSc.Vec().createWithArray(self.array, comm=system.comm)
+        
+    
+    def __call__(self, inp1=[], inp2=[]):
+        if inp2 is []:
+            return self[self.name, self.copy][self._ID(inp1)]
+        else:
+            return self[self._ID(inp1)][self._ID(inp2)]
+
+class DataVec(OrderedDict0):
+    """ Codomain vecs: simply wraps the _ID method as a __call__ """
+
+    def _initialize(self): 
+        system = self.system       
+        i1, i2 = 0, 0
+        for i in xrange(len(system.variables)):
+            n,c = system.variables.keys()[i]
+            i2 += system.varSizes[system.rank,i]
+            self[n,c] = self.array[i1:i2]
+            i1 += system.varSizes[system.rank,i]
+
+        return PETSc.Vec().createWithArray(self.array, comm=system.comm)
+
+    def __call__(self, var=[]):
+        if var is []:
+            return self[self.name, self.copy]
+        else:
+            return self[self._ID(var)]
+
+
+
 class System(object):
     """ Nonlinear system base class """
 
-    def _initializeSystem(self, name, copy, numReqProcs):
+    def _initialize_system(self, name, copy, numReqProcs):
         """ Method called by __init__ to define basic attributes """
         self.name = name
         self.copy = copy
         self.numReqProcs = numReqProcs
         self.variables = OrderedDict()
 
-        class OrderedDict0(OrderedDict):
-            """ An OrderedDict that can infer copy # when not specified """
-            def __init__(self, name, copy):
-                self.name = name
-                self.copy = copy
-                super(OrderedDict0,self).__init__()
-            def _ID(self, inp):
-                if len(inp) == 1:
-                    return inp[0], 0
-                elif inp[1] == -1:
-                    return inp[0], self.copy
-                else:
-                    return inp[0], inp[1]
+    def _setup1of5_comms(self):
+        """ Receives the communicator and distributes to subsystems """
+        self.rank = self.comm.Get_rank()
+        self.size = self.comm.Get_size()
+        self._setup1of5_comms_distribute()
 
-        class OrderedDictDomVec(OrderedDict0):
-            """ Domain vecs: assumes [n,c][n,c] when arg not specified """
-            def __call__(self, arg=[], var=[]):
-                if var == []:
-                    args = self[self.name, self.copy]
-                else:
-                    args = self[self._ID(var)]
-                if arg == []:
-                    return args[None,None]
-                else:
-                    return args[self._ID(arg)]
+        for system in self.localSubsystems:
+            system._setup1of5_comms()
 
-        class OrderedDictCodVec(OrderedDict0):
-            """ Codomain vecs: simply wraps the _ID method as a __call__ """
-            def __call__(self, var=[]):
-                if var == []:
-                    return self[self.name, self.copy]
-                else:
-                    return self[self._ID(var)]
-
-        self.vVec = OrderedDictDomVec(name, copy)
-        self.xVec = OrderedDictDomVec(name, copy)
-        self.cVec = OrderedDictCodVec(name, copy)
-        self.yVec = OrderedDictCodVec(name, copy)
-
-        self.scatterFwd = None
-        self.scatterRev = None
-
-    def _initializeSizeArrays(self):
+    def _setup2of5_sizes(self):
         """ Assembles nProc x nVar array of local variable sizes """
         self.varSizes = numpy.zeros((self.size, len(self.variables)),int)
         index = 0
@@ -84,119 +126,94 @@ class System(object):
         self.comm.Allgather(self.argSizes[self.rank], self.argSizes)
 
         for system in self.localSubsystems:
-            system._initializeSizeArrays()
+            system._setup2of5_sizes()
 
-    def _initializePETScVecs(self, v, x, c, y):
+    def _setup3of5_vecs(self, u, f, du, df):
         """ Creates PETSc Vecs with preallocated (Var) or new (Arg) arrays """
-        self.vVarPETSc = PETSc.Vec().createWithArray(v, comm=self.comm)
-        self.xVarPETSc = PETSc.Vec().createWithArray(x, comm=self.comm)
-        self.cVarPETSc = PETSc.Vec().createWithArray(c, comm=self.comm)
-        self.yVarPETSc = PETSc.Vec().createWithArray(y, comm=self.comm)
+        self.uVec = DataVec(self.name, self.copy, self, u)
+        self.fVec = DataVec(self.name, self.copy, self, f)
+        self.duVec = DataVec(self.name, self.copy, self, du)
+        self.dfVec = DataVec(self.name, self.copy, self, df)
+
+        i1, i2 = 0, 0
+        for subsystem in self.localSubsystems:
+            i2 += numpy.sum(subsystem.varSizes[subsystem.rank,:])
+            subsystem._setup3of5_vecs(u[i1:i2], f[i1:i2], du[i1:i2], df[i1:i2])
+            i1 += numpy.sum(subsystem.varSizes[subsystem.rank,:])
 
         m = self.argSizes[self.rank]
-        zeros = numpy.zeros
-        self.vArgPETSc = PETSc.Vec().createWithArray(zeros(m), comm=self.comm)
-        self.xArgPETSc = PETSc.Vec().createWithArray(zeros(m), comm=self.comm)
+        self.pVec = BufferVec(self.name, self.copy, self, numpy.zeros(m))
+        self.dpVec = BufferVec(self.name, self.copy, self, numpy.zeros(m))
+        self.dgVec = self.dpVec
 
-        i1, i2 = 0, 0
-        for system in self.localSubsystems:
-            i2 += numpy.sum(system.varSizes[system.rank,:])
-            system._initializePETScVecs(v[i1:i2], x[i1:i2], c[i1:i2], y[i1:i2])
-            i1 += numpy.sum(system.varSizes[system.rank,:])
-
-        for i in xrange(len(self.variables)):
-            n,c = self.variables.keys()[i]
-            self.vVec[n,c] = OrderedDict()
-            self.xVec[n,c] = OrderedDict()
-
-    def _initializeVecs(self):
+    def _setup4of5_propagateBufferVecs(self):
         """ Creates the mapping between the Vec OrderedDicts and data """
-        i1, i2 = 0, 0
-        for i in xrange(len(self.variables)):
-            n,c = self.variables.keys()[i]
-            i2 += self.varSizes[self.rank,i]
-            self.vVec[n,c][None,None] = self.vVarPETSc.array[i1:i2]
-            self.xVec[n,c][None,None] = self.xVarPETSc.array[i1:i2]
-            self.cVec[n,c] = self.cVarPETSc.array[i1:i2]
-            self.yVec[n,c] = self.yVarPETSc.array[i1:i2]
-            i1 += self.varSizes[self.rank,i]
+        for subsystem in self.localSubsystems:
+            for (n1, c1) in subsystem.variables:
+                for (n2, c2) in self.pVec[n1,c1]:
+                    subsystem.pVec[n1,c1][n2,c2] = self.pVec[n1,c1][n2,c2]
+                    subsystem.dpVec[n1,c1][n2,c2] = self.dpVec[n1,c1][n2,c2]
+            subsystem._setup4of5_propagateBufferVecs()
+            for (n1, c1) in subsystem.variables:
+                for (n2, c2) in subsystem.pVec[n1,c1]:
+                    self.pVec[n1,c1][n2,c2] = subsystem.pVec[n1,c1][n2,c2]
+                    self.dpVec[n1,c1][n2,c2] = subsystem.dpVec[n1,c1][n2,c2]
 
-        i1, i2 = 0, 0
+    def _setup5of5_scatters(self):
+        self._setup5of5_scatters_create()
+
         for system in self.localSubsystems:
-            for (n1, c1) in system.variables:
-                args = system.variables[n1,c1]['args']
-                for (n2, c2) in args:
-                    if (n2, c2) not in system.variables \
-                            and (n2, c2) in self.variables:
-                        i2 += args[n2,c2].shape[0]
-                        self.vVec[n1,c1][n2,c2] = self.vArgPETSc.array[i1:i2]
-                        self.xVec[n1,c1][n2,c2] = self.xArgPETSc.array[i1:i2]
-                        i1 += args[n2,c2].shape[0]
+            system._setup5of5_scatters()
 
-            for (n1, c1) in system.variables:
-                for (n2, c2) in self.vVec[n1,c1]:
-                    system.vVec[n1,c1][n2,c2] = self.vVec[n1,c1][n2,c2]
-                    system.xVec[n1,c1][n2,c2] = self.xVec[n1,c1][n2,c2]
-            system._initializeVecs()
-            for (n1, c1) in system.variables:
-                for (n2, c2) in system.vVec[n1,c1]:
-                    self.vVec[n1,c1][n2,c2] = system.vVec[n1,c1][n2,c2]
-                    self.xVec[n1,c1][n2,c2] = system.xVec[n1,c1][n2,c2]
-
-    def _evalC(self):
-        """ Evaluate constraints, vVec -> cVec [overwrite] """
+    def _apply_F(self):
+        """ Evaluate function, (u,p) |-> f [overwrite] """
         pass
 
-    def _applyJ(self, mode, arguments):
-        """ Apply Jacobian, xVec -> yVec (fwd) or yVec -> xVec (rev) [add] """
+    def _apply_dFdpu(self, mode, arguments):
+        """ Apply Jacobian, (du,dp) |-> df [fwd] or df |-> (du,dp) [rev] [add] """
         pass
 
-    def _evalCinv(self):
-        """ (Possibly inexact) solve, vVec -> vVec [overwrite] """
+    def _solve_F(self):
+        """ (Possibly inexact) solve, p |-> u [overwrite] """
         pass
 
-    def _applyJinv(self, mode):
-        """ Apply Jac. inv., yVec -> xVec (fwd) or xVec -> yVec (rev) [overwrite] """
+    def _solve_dFdu(self, mode):
+        """ Apply Jac. inv., df |-> du [fwd] or du |-> df (rev) [overwrite] """
         pass
 
-    def _scatter(self, vec, mode, system=None):
-        """ Perform scatter for ith subsystem or a full scatter if i = -1 """
-        if vec == 'vVec':
-            vec1, vec2 = self.vVarPETSc, self.vArgPETSc
-        elif vec == 'xVec':
-            vec1, vec2 = self.xVarPETSc, self.xArgPETSc
+    def _scatter(self, vec, mode, subsystem=None):
+        """ Perform partial or full scatter """
+        if vec == 'u':
+            vec1, vec2 = self.uVec.PETSc, self.pVec.PETSc
+        elif vec == 'du':
+            vec1, vec2 = self.duVec.PETSc, self.dpVec.PETSc
         else:
             raise Exception('vec type not recognized')
 
-        if system == None:
+        if subsystem == None:
             scatter = self.scatterFull
         elif mode == 'fwd':
-            scatter = system.scatterFwd
+            scatter = subsystem.scatterFwd
         elif mode == 'rev':
             vec1, vec2 = vec2, vec1
-            scatter = system.scatterRev
+            scatter = subsystem.scatterRev
         else:
             raise Exception('mode type not recognized')
 
         if not scatter == None:
             scatter.scatter(vec1, vec2, addv = True, mode = mode == 'rev')
 
-    def _createPETScVec(self):
-        """ Returns a PETSc Vec with a size of the total number of unknowns """
-        m = numpy.sum(self.varSizes[self.rank,:])
-        return PETSc.Vec().createWithArray(numpy.zeros(m), comm=self.comm)
-
-    def initialize(self, comm=MPI.COMM_WORLD):
+    def setup(self, comm=MPI.COMM_WORLD):
         """ Top-level initialize method called by user """
-        self._initializeCommunicators(comm)
-        self._initializeSizeArrays()
+        self.comm = comm
+        self._setup1of5_comms()
+        self._setup2of5_sizes()
 
         m = numpy.sum(self.varSizes[self.rank,:])
         zeros = numpy.zeros
-        self._initializePETScVecs(zeros(m), zeros(m), zeros(m), zeros(m))
-        self._initializePETScScatters()
-
-        self._initializeVecs()
+        self._setup3of5_vecs(zeros(m), zeros(m), zeros(m), zeros(m))
+        self._setup4of5_propagateBufferVecs()
+        self._setup5of5_scatters()
 
 
 
@@ -206,30 +223,34 @@ class SimpleSystem(System):
     def __init__(self, copy=0, **kwargs):
         """ Defines basic attributes and initializes variables/arguments dicts """
         self.kwargs = kwargs
-        name, numReqProcs = self._declare()
-        self._initializeSystem(name, copy, numReqProcs)
+        self.subsystems = []
+        name, numReqProcs = self._declare_global()
+        self._initialize_system(name, copy, numReqProcs)
         self.variables[name, copy] = {'size':0, 'args':OrderedDict()}
         self.allsystems = []
 
-    def _setLocalSize(self, size):
+    def _declare_global(self):
+        pass
+
+    def _declare_local(self):
+        pass
+
+    def _declare_local_size(self, size):
         """ Size of the variable vector on the current proc """
         self.variables[self.name, self.copy]['size'] = size
 
-    def _setArgument(self, name, copy=0, indices=[0]):
+    def _declare_local_argument(self, name, copy=0, indices=[0]):
         """ Helper method for declaring arguments """
         copy = self.copy if copy == -1 else copy
         arg = self.variables[self.name, self.copy]['args']
         arg[name,copy] = numpy.array(indices,'i')
 
-    def _initializeCommunicators(self, comm):
-        """ No subsystems to distribute comms to """
-        self.comm = comm
-        self.rank = comm.Get_rank()
-        self.size = comm.Get_size()
-        self._declareArguments()
+    def _setup1of5_comms_distribute(self):
+        """ Defines subsystems on current proc and assigns them comms """
         self.localSubsystems = []
+        self._declare_local()
 
-    def _initializePETScScatters(self):
+    def _setup5of5_scatters_create(self):
         """ Defines a scatter for when a variable is its own argument """
         n,c = self.name, self.copy
         args = self.variables[n,c]['args']
@@ -240,78 +261,81 @@ class SimpleSystem(System):
             argIndices = numpy.array(numpy.linspace(m1, m2-1, m2-m1), 'i')
             ISvar = PETSc.IS().createGeneral(varIndices, comm=self.comm)
             ISarg = PETSc.IS().createGeneral(argIndices, comm=self.comm)
-            self.scatterFull = PETSc.Scatter().create(self.vVarPETSc, ISvar,
-                                                      self.vArgPETSc, ISarg)
+            self.scatterFull = PETSc.Scatter().create(self.uVec.PETSc, ISvar,
+                                                      self.pVec.PETSc, ISarg)
         else:
             self.scatterFull = None
 
 
 
-class ImplicitVariable(SimpleSystem):
+class ImplicitSystem(SimpleSystem):
     """ Variable implicitly defined by v_i : C_i(v) = 0 """
     pass
 
 
 
-class ExplicitVariable(SimpleSystem):
+class ExplicitSystem(SimpleSystem):
     """ Variable explicitly defined by v_i : V_i(v_{j!=i}) """
 
-    def _evalC(self):
-        """ C_i(v) = v_i - V_i(v_{j!=i}) = 0 """
-        self.cVarPETSc.array[:] = 0.0
-        self._solve()
+    def _apply_F(self):
+        """ F_i(p_i,u_i) = u_i - G_i(p_i) = 0 """
+        self.fVec.array[:] = 0.0
+        self._apply_G()
 
-    def _applyJ(self, mode, arguments):
-        """ y = d{C_i}dv * x = x_i - d{V_i}dv * x """
-        """ x = d{C_v}dv^T * y = [0,...,y,...,0] - d{V_i}dv^T * y """
+    def _apply_dFdpu(self, mode, arguments):
         if mode == 'fwd':
-            self.yVarPETSc.array[:] += self.xVarPETSc.array[:]
-            self.yVarPETSc.array[:] *= -1.0
-            self._applyJacobian(arguments)
-            self.yVarPETSc.array[:] *= -1.0
+            self.dfVec.array[:] += self.duVec.array[:]
         elif mode == 'rev':
-            self.xVarPETSc.array[:] += self.yVarPETSc.array[:]
-            self.yVarPETSc.array[:] *= -1.0
-            self._applyJacobian_T(arguments)
-            self.yVarPETSc.array[:] *= -1.0
+            self.duVec.array[:] += self.dfVec.array[:]
         else:
             raise Exception('mode type not recognized')
+        self.dfVec.array[:] *= -1.0
+        self._apply_dGdp(mode, arguments)
+        self.dfVec.array[:] *= -1.0
 
-    def _evalCinv(self):
+    def _solve_F(self):
         """ v_i = V_i(v_{j!=i}) """
-        self._solve()
+        self._apply_G()
 
 
 
-class IndependentVariable(SimpleSystem):
+class IndependentSystem(SimpleSystem):
     """ Variable given by v_i = v_i^* """
 
-    def _evalC(self):
-        """ C_i(v) = v_i - v_i^* = 0 """
-        self.cVarPETSc.array[:] = 0.0
-        self.vVarPETSc.array[:] = self.value[:]
+    def __init__(self, name, copy=0, value=0, size=1, **kwargs):
+        """ Defines basic attributes and initializes variables/arguments dicts """
+        numReqProcs=1
+        self.value = value
+        if type(value) is numpy.ndarray:
+            size = value.shape[0]
 
-    def _applyJ(self, mode, arguments):
-        """ y = d{C_i}dv * x = x_i """
-        """ x = d{C_i}dv^T * y = [0,...,y,...,0] """
+        self.kwargs = kwargs
+        self.subsystems = []
+        self._initialize_system(name, copy, numReqProcs)
+        self.variables[name, copy] = {'size':size, 'args':OrderedDict()}
+        self.allsystems = []
+
+    def _apply_F(self):
+        """ F_i(p_i,u_i) = u_i - u_i^* = 0 """
+        self.fVec.array[:] = 0.0
+        self.uVec.array[:] = self.value
+
+    def _apply_dFdpu(self, mode, arguments):
         if mode == 'fwd':
-            self.yVarPETSc.array[:] += self.xVarPETSc.array[:]
+            self.dfVec.array[:] += self.duVec.array[:]
         elif mode == 'rev':
-            self.xVarPETSc.array[:] += self.yVarPETSc.array[:]
+            self.duVec.array[:] += self.dfVec.array[:]
         else:
             raise Exception('mode type not recognized')
 
-    def _evalCinv(self):
-        """ v_i = v_i^* """
-        self.vVarPETSc.array[:] = self.value[:]
+    def _solve_F(self):
+        self.uVec.array[:] = self.value
 
     def _applyJinv(self, mode):
-        """ x = d{C_i}dv^{-1} * y """
-        """ y = d{C_i}dv^{-T} * x """
         if mode == 'fwd':
-            self.xVarPETSc.array[:] = self.yVarPETSc.array[:]
+            self.duVec.array[:] += self.dfVec.array[:]
         elif mode == 'rev':
-            self.yVarPETSc.array[:] = self.xVarPETSc.array[:]
+            self.dfVec.array[:] += self.duVec.array[:]
         else:
             raise Exception('mode type not recognized')
 
@@ -324,12 +348,12 @@ class CompoundSystem(System):
         """ Defines basic attributes and initializes variables/arguments dicts """
         self.kwargs = kwargs
         self.subsystems = subsystems
-        numReqProcs = numpy.sum([system.numReqProcs for system in subsystems])
-        self._initializeSystem(name, copy, numReqProcs)
+        numReqProcs = numpy.sum([subsystem.numReqProcs for subsystem in subsystems])
+        self._initialize_system(name, copy, numReqProcs)
 
-        for system in subsystems:
-            for n,c in system.variables:
-                self.variables[n,c] = system.variables[n,c]
+        for subsystem in subsystems:
+            for n,c in subsystem.variables:
+                self.variables[n,c] = subsystem.variables[n,c]
 
         self.allsystems = []
         for system in subsystems:
@@ -340,7 +364,7 @@ class CompoundSystem(System):
         copy = self.copy if copy == -1 else copy
         return self.allsystems[name, copy]
 
-    def _initializePETScScatters(self):
+    def _setup5of5_scatters_create(self):
         """ First, defines the PETSc Vec application ordering objects """
         getLinspace = lambda m1, m2: numpy.array(numpy.linspace(m1,m2-1,m2-m1),'i')
         varSizes = self.varSizes
@@ -370,21 +394,21 @@ class CompoundSystem(System):
             if ISvar.array.shape[0] == 0:
                 return None
             else:
-                return PETSc.Scatter().create(self.vVarPETSc, ISvar, self.vArgPETSc, ISarg)
+                return PETSc.Scatter().create(self.uVec.PETSc, ISvar, self.pVec.PETSc, ISarg)
 
         variableIndex = self.variables.keys().index
         varIndsFull = []
         argIndsFull = []
         i1, i2 = 0, 0
-        for system in self.subsystems:
+        for subsystem in self.subsystems:
             varIndsFwd = []
             argIndsFwd = []
             varIndsRev = []
             argIndsRev = []
-            for (n1, c1) in system.variables:
-                args = system.variables[n1,c1]['args']
+            for (n1, c1) in subsystem.variables:
+                args = subsystem.variables[n1,c1]['args']
                 for (n2, c2) in args:
-                    if (n2, c2) not in system.variables \
+                    if (n2, c2) not in subsystem.variables \
                             and (n2, c2) in self.variables:
                         j = variableIndex((n1,c1))
                         i2 += args[n2,c2].shape[0]
@@ -399,56 +423,42 @@ class CompoundSystem(System):
                             argIndsRev.append(argInds)
                         varIndsFull.append(varInds)
                         argIndsFull.append(argInds)
-            system.scatterFwd = createScatter(self, varIndsFwd, argIndsFwd)
-            system.scatterRev = createScatter(self, varIndsRev, argIndsRev)
+            subsystem.scatterFwd = createScatter(self, varIndsFwd, argIndsFwd)
+            subsystem.scatterRev = createScatter(self, varIndsRev, argIndsRev)
         self.scatterFull = createScatter(self, varIndsFull, argIndsFull)
 
-        for system in self.localSubsystems:
-            system._initializePETScScatters()
-
-    def _evalC(self):
+    def _applyF(self):
         """ Delegate to subsystems """
-        i = 0
-        for system in self.localSubsystems:
-            self._scatter('vVec', 'fwd', system)
-            i += 1
-            system._evalC()
+        for subsystem in self.localSubsystems:
+            self._scatter('u', 'fwd', subsystem)
+            subsystem._applyF()
 
-    def _applyJ(self, mode, arguments):
+    def _apply_dFdpu(self, mode, arguments):
         """ Delegate to subsystems """
-        if mode == 'fwd':
-            for system in self.localSubsystems:
-                system._applyJ(arguments)
-        elif mode == 'rev':
-            for system in self.localSubsystems:
-                system._applyJT(arguments)
-        else:
-            raise Exception('mode type not recognized')
+        for subsystem in self.localSubsystems:
+            subsystem._apply_dFdpu(mode, arguments)
 
     def _computeLinearResidual(self, rhs, mode):
         if mode == 'fwd':
-            vec = self.yVarPETSc
+            vec = self.dfVec
         elif mode == 'rev':
-            vec = self.xVarPETSc
+            vec = self.duVec
         else:
             raise Exception('mode type not recognized')
-        self.xArgPETSc.array[:] = 0.0
+        self.dpVec.array[:] = 0.0
         vec.array[:] = -rhs[:]
-        self._scatter('xVec', mode) if mode == 'fwd' else None
-        self.applyJ(mode, self.variables.keys())
-        self._scatter('xVec', mode) if mode == 'rev' else None
-        return vec.norm()
+        self._scatter('du', mode) if mode == 'fwd' else None
+        self.apply_dFdpu(mode, self.variables.keys())
+        self._scatter('du', mode) if mode == 'rev' else None
+        vec.PETSc.assemble()
+        return vec.PETSc.norm()
 
 
 
 class ParallelSystem(CompoundSystem):
 
-    def _initializeCommunicators(self, comm):
-        """ Splits available procs among subsystems based on # requested procs """
-        self.comm = comm
-        self.rank = comm.Get_rank()
-        self.size = comm.Get_size()
-
+    def _setup1of5_comms_distribute(self):
+        """ Defines subsystems on current proc and assigns them comms """
         if len(self.subsystems) > self.size:
             raise Exception("Not enough procs to split comm in " + self.name)
 
@@ -472,53 +482,56 @@ class ParallelSystem(CompoundSystem):
         subcomm = self.comm.Split(color[self.rank])
         self.localSubsystems = [self.subsystems[color[self.rank]]]
 
-        for system in self.localSubsystems:
-            system._initializeCommunicators(subcomm)
+        for subsystem in self.localSubsystems:
+            subsystem.comm = subcomm
 
-    def _evalCinv(self):
+    def _solve_F(self):
         """ Jacobi by default """
-        self._evalCinv_Jacobi()
+        self._solve_F_Jacobi()
 
-    def _evalCinv_blockDiagSolve(self):
+    def _solve_F_blockDiagSolve(self):
         """ Solve each subsystem in parallel """
-        self._scatter('vVec', 'fwd')
-        for system in self.localSubsystems:
-            system._evalCinv()
+        self._scatter('u', 'fwd')
+        for subsystem in self.localSubsystems:
+            subsystem._solve_F()
 
-    def _evalCinv_Jacobi(self, ilimit=100, atol=1e-6, rtol=1e-4):
+    def _solve_F_Jacobi(self, ilimit=100, atol=1e-6, rtol=1e-4):
         """ Nonlinear block Jacobi """
         counter = 0
-        norm0 = self.cVarPETSc.norm()
+        self._apply_F()
+        self.fVec.PETSc.assemble()
+        norm0 = self.fVec.PETSc.norm()
         norm = norm0
         while counter < ilimit and norm > atol and norm/norm0 > rtol:
-            self._evalCinv_blockDiagSolve()
-            self._evalC()
-            norm = self.cVarPETSc.norm()
+            self._solve_F_blockDiagSolve()
+            self._apply_F()
+            self.fVec.PETSc.assemble()
+            norm = self.fVec.PETSc.norm()
             counter += 1
 
-    def _applyJinv(self, mode):
+    def _solve_dFdu(self, mode):
         """ Jacobi by default """
-        self._applyJinv_Jacobi(mode)
+        self._solve_dFdu_Jacobi(mode)
 
-    def _applyJinv_blockDiagSolve(self, mode):
+    def _solve_dFdu_blockDiagSolve(self, mode):
         """ Invert each subsystem's block; block diagonal preconditioner """
-        for system in self.localSubsystems:
-            system._applyJinv(mode)
+        for subsystem in self.localSubsystems:
+            subsystem._applyJinv(mode)
 
-    def _applyJinv_Jacobi(self, mode, ilimit=100, atol=1e-6, rtol=1e-4):
+    def _solve_dFdu_Jacobi(self, mode, ilimit=100, atol=1e-6, rtol=1e-4):
         """ Linear block Jacobi """
         if mode == 'fwd':
-            rhs = numpy.array(self.yVarPETSc.array)
+            rhs = numpy.array(self.dfVec.array)
         elif mode == 'rev':
-            rhs = numpy.array(self.xVarPETSc.array)
+            rhs = numpy.array(self.duVec.array)
         else:
             raise Exception('Vec type not recognized')
 
         counter = 0
-        norm0 = computeNorm(self, rhs, mode)
+        norm0 = self.computeLinearResidual(self, rhs, mode)
         norm = norm0
         while counter < ilimit and norm > atol and norm/norm0 > rtol:
-            self._applyJinv_blockDiagSolve(mode)
+            self._solve_dFdu_blockDiagSolve(mode)
             norm = self.computeLinearResidual(self, rhs, mode)
             counter += 1
 
@@ -526,77 +539,76 @@ class ParallelSystem(CompoundSystem):
 
 class SerialSystem(CompoundSystem):
 
-    def _initializeCommunicators(self, comm):
-        """ Passes communicator to subsystems """
-        self.comm = comm
-        self.rank = comm.Get_rank()
-        self.size = comm.Get_size()
+    def _setup1of5_comms_distribute(self):
+        """ Defines subsystems on current proc and assigns them comms """
         self.localSubsystems = self.subsystems
 
         for system in self.localSubsystems:
-            system._initializeCommunicators(self.comm)
+            system.comm = self.comm
 
-    def _evalCinv(self):
+    def _solve_F(self):
         """ Gauss Seidel by default """
-        self._evalCinv_GS()
+        self._solve_F_GS()
 
-    def _evalCinv_FwdBlockSolve(self):
+    def _solve_F_FwdBlockSolve(self):
         """ Solve each subsystem sequentially """
-        self._scatter('vVec', 'fwd')
-        for system in self.localSubsystems:
-            self._scatter('vVec', 'fwd', system)
-            system._evalCinv()
+        self._scatter('u', 'fwd')
+        for subsystem in self.localSubsystems:
+            self._scatter('u', 'fwd', subsystem)
+            subsystem._solve_F()
 
-    def _evalCinv_GS(self, ilimit=100, atol=1e-6, rtol=1e-4):
+    def _solve_F_GS(self, ilimit=100, atol=1e-6, rtol=1e-4):
         """ Nonlinear block Gauss Seidel """
         counter = 0
-        self._evalC()
-        norm0 = self.cVarPETSc.norm()
+        self._apply_F()
+        self.fVec.PETSc.assemble()
+        norm0 = self.fVec.PETSc.norm()
         norm = norm0
         while counter < ilimit and norm > atol and norm/norm0 > rtol:
             print 'GS', counter, norm
-            self._evalCinv_FwdBlockSolve()
-            self._evalC()
-            norm = self.cVarPETSc.norm()
+            self._solve_F_FwdBlockSolve()
+            self._apply_F()
+            self.fVec.PETSc.assemble()
+            norm = self.fVec.PETSc.norm()
             counter += 1
 
-    def _applyJinv(self, mode):
+    def _solve_dFdu(self, mode):
         """ Jacobi by default """
-        self._applyJinv_GS(mode)
+        self._solve_dFdu_GS(mode)
 
-    def _applyJinv_blockTrglSolve(self, mode):
+    def _solve_dFdu_blockTrglSolve(self, mode):
         """ Block fwd or rev substitution; block triangular preconditioner """
-        self.xArgPETSc.array[:] = 0.0
+        self.dpVec.array[:] = 0.0
         if mode == 'fwd':
-            for system in self.localSubsystems:
-                self._scatter('xVec', mode, system)
-                system.yVarPETSc.array[:] *= -1.0
-                system._applyJ(mode, self.variables.keys())
-                system.yVarPETSc.array[:] *= -1.0
-                system._applyJinv(mode)
+            for subsystem in self.localSubsystems:
+                self._scatter('du', mode, subsystem)
+                subsystem.dfVec.array[:] *= -1.0
+                subsystem._apply_dFdpu(mode, self.variables.keys())
+                subsystem.dfVec.array[:] *= -1.0
+                subsystem._solve_dFdu(mode)
         elif mode == 'rev':
-            for system in self.localSubsystems:
-                system.xVarPETSc.array[:] *= -1.0
-                self._scatter('xVec', mode, system)
-                system.xVarPETSc.array[:] *= -1.0
-                system._applyJinv(mode)
-                system._applyJ(mode, self.variables.keys())
+            for subsystem in self.localSubsystems:
+                subsystem.duVec.array[:] *= -1.0
+                self._scatter('xVec', mode, subsystem)
+                subsystem.duVec.array[:] *= -1.0
+                subsystem._solve_dFdu(mode)
+                subsystem._apply_dFdpu(mode, self.variables.keys())
         else:
             raise Exception('Vec type not recognized')
 
-    def _applyJinv_GS(self, mode, ilimit=100, atol=1e-6, rtol=1e-4):
+    def _solve_dFdu_GS(self, mode, ilimit=100, atol=1e-6, rtol=1e-4):
         """ Linear block Gauss Seidel """
         if mode == 'fwd':
-            rhs = numpy.array(self.yVarPETSc.array)
+            rhs = numpy.array(self.dfVec.array)
         elif mode == 'rev':
-            rhs = numpy.array(self.xVarPETSc.array)
+            rhs = numpy.array(self.duVec.array)
         else:
             raise Exception('Vec type not recognized')
 
         counter = 0
-        norm0 = computeNorm(self, rhs, mode)
+        norm0 = self.computeLinearResidual(self, rhs, mode)
         norm = norm0
         while counter < ilimit and norm > atol and norm/norm0 > rtol:
-            self._applyJinv_blockTrglSolve(mode)
+            self._solve_dFdu_blockTrglSolve(mode)
             norm = self.computeLinearResidual(self, rhs, mode)
             counter += 1
