@@ -108,9 +108,9 @@ main = \
 print main.compute(False).array
 
 if main(['yi',0]).comm is not None:
-    print 'yi:', main(['yi',0]).check_derivatives('fwd')
+    print 'yi:', main(['yi',0]).check_derivatives()
 if main(['zi',0]).comm is not None:
-    print 'zi:', main(['zi',0]).check_derivatives('fwd')
+    print 'zi:', main(['zi',0]).check_derivatives()
 
 h = 0.1
 v0 = numpy.array(main.compute(False).array)

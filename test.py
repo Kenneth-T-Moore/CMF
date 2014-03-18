@@ -66,6 +66,6 @@ print main.compute()
 print main.compute_derivatives('fwd', 'a')
 
 if main('a').comm is not None:
-    print 'a:', main('a').check_derivatives('fwd')
+    print 'a:', main('a').check_derivatives()
 if main('b').comm is not None:
-    print 'b:', main('b').check_derivatives('fwd')
+    print 'b:', main('b').check_derivatives()

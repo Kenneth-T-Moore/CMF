@@ -403,7 +403,7 @@ class System(object):
 
     def compute_derivatives(self, mode, var, ind=0, output=True):
         """ Solves derivatives of system (direct/adjoint) """
-        self.set_mode('fwd', output)
+        self.set_mode(mode, output)
         self.rhs_vec.array[:] = 0.0
 
         ivar = self.variables.keys().index(self.get_ID(var))
@@ -417,7 +417,7 @@ class System(object):
         self.solve_dFdu()
         return self.sol_vec
 
-    def check_derivatives(self, mode):
+    def check_derivatives(self):
         """ Check derivatives against FD """
         self.set_mode('fwd')
 
@@ -811,12 +811,12 @@ class Backtracking(NonlinearSolver):
     def _initialize(self):
         """ Enforce bounds """
         system = self._system
-        u = system.vec['u'].array
-        du = system.vec['du'].array
 
         self.alpha = 1.0
         for var in system.variables:
             if system.variables[var] is not None:
+                u = system.vec['u'][var]
+                du = system.vec['du'][var]
                 lower = system.variables[var]['lower']
                 upper = system.variables[var]['upper']
                 if lower is not None:
@@ -932,8 +932,10 @@ class KSP(LinearSolver):
         """ Set up KSP object """
         super(KSP, self).__init__(system)
 
+        lsize = numpy.sum(system.var_sizes[system.comm.rank, :])
         size = numpy.sum(system.var_sizes)
-        jac_mat = PETSc.Mat().createPython([size, size], comm=system.comm)
+        jac_mat = PETSc.Mat().createPython([(lsize, size), (lsize, size)], 
+                                           comm=system.comm)
         jac_mat.setPythonContext(self)
         jac_mat.setUp()
 
