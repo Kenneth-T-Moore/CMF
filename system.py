@@ -520,9 +520,12 @@ class ExplicitSystem(ElementarySystem):
 
     def apply_F(self):
         """ F_i(p_i,u_i) = u_i - G_i(p_i) = 0 """
+        vec = self.vec
         self.scatter('nln')
+        vec['f'].array[:] = vec['u'].array[:]
         self.apply_G()
-        self.vec['f'].array[:] = 0.0
+        vec['f'].array[:] -= vec['u'].array[:]
+        vec['u'].array[:] += vec['f'].array[:]
 
     def apply_dFdpu(self, arguments):
         """ df = du - dGdp * dp or du = df and dp = -dGdp^T * df """
@@ -555,11 +558,13 @@ class ExplicitSystem(ElementarySystem):
 class IndVar(ExplicitSystem):
     """ Variables given by v_i = v_i^* """
 
-    def __init__(self, name, copy=0, value=0, size=1, **kwargs):
+    def __init__(self, name, copy=0, val=0, size=1, **kwargs):
         """ Enables one-line definition of independent variables """
-        self.value = value
+        self.value = val
         if isinstance(self.value, numpy.ndarray):
             self.size = self.value.shape[0]
+        elif isinstance(self.value, list):
+            self.size = len(self.value)
         else:
             self.size = size
 
@@ -818,12 +823,12 @@ class Backtracking(NonlinearSolver):
                     lower_const = u + self.alpha*du - lower
                     ind = numpy.argmin(lower_const)
                     if lower_const[ind] < 0:
-                        self.alpha = (lower[ind] - u[ind]) / du[ind]
+                        self.alpha = ((lower - u) / du)[ind]
                 if upper is not None:
                     upper_const = upper - u - self.alpha*du
                     ind = numpy.argmin(upper_const)
                     if upper_const[ind] < 0:
-                        self.alpha = (upper[ind] - u[ind]) / du[ind]
+                        self.alpha = ((upper - u) / du)[ind]
         self.info = self.alpha
 
         norm0 = self._norm()

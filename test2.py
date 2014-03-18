@@ -93,10 +93,10 @@ class Var_zi(ImplicitSystem):
 
 main = \
     SerialSystem('main', subsystems=[
-        IndVar('x0', value=10.0, size=1),
+        IndVar('x0', val=10.0, size=1),
         ParallelSystem('pts', subsystems=[
                     SerialSystem('pt', copy=i, subsystems=[
-                            IndVar('xi',copy=i,value=i+1,size=1),
+                            IndVar('xi',copy=i,val=i+1,size=1),
                             SerialSystem('cpl', copy=i, subsystems=[
                                     Var_yi('yi', i),
                                     Var_zi('zi', i),
