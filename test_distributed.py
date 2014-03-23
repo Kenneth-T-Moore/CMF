@@ -1,5 +1,5 @@
 from __future__ import division
-from system import *
+from framework import *
 
 
 class Var_yi(ImplicitSystem):

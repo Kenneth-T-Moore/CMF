@@ -1,5 +1,5 @@
 from __future__ import division
-from system import *
+from framework import *
 
 
 class VarA(ImplicitSystem):
@@ -16,7 +16,7 @@ class VarA(ImplicitSystem):
         #f = 2*a + 3*b - 5
         v['f']('a')[0] = f
 
-    def apply_dFdpu(self, arguments):
+    def apply_dFdpu0(self, arguments):
         v = self.vec
         a = v['u']('a')[0]
         b = v['p']('b')[0]
