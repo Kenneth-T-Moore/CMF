@@ -119,7 +119,7 @@ class System(object):
 
         methods = {'NL': 'NEWTON',
                    'LN': 'KSP_PC',
-                   'PC': 'None',
+                   'PC': 'SCALNG',
                    'LS': 'BK_TKG',
                    }
         for problem in methods:
@@ -287,7 +287,7 @@ class System(object):
                               'NLN_JC': NonlinearJacobi(self),
                               'NLN_GS': NonlinearGS(self),
                               }  
-        self.solvers['LN'] = {'None': Identity(self),
+        self.solvers['LN'] = {'SCALNG': Scaling(self),
                               'KSP_PC': KSP(self),
                               'LIN_JC': LinearJacobi(self),
                               'LIN_GS': LinearGS(self),
@@ -343,6 +343,12 @@ class System(object):
     def solve_precon(self):
         """ Apply preconditioner """
         kwargs = self.kwargs
+        if self.mode == 'fwd':
+            for var in self.rhs_vec:
+                self.rhs_vec[var][:] *= self.variables[var]['f_scal']
+        elif self.mode == 'rev':
+            for var in self.rhs_vec:
+                self.rhs_vec[var][:] /= self.variables[var]['v_scal']
         self.solvers['LN'][kwargs['PC']](ilimit=kwargs['PC_ilimit'],
                                          atol=kwargs['PC_atol'],
                                          rtol=kwargs['PC_rtol'])
@@ -452,13 +458,16 @@ class ElementarySystem(System):
         """ Must be implemented by the user """
         raise Exception('This method must be implemented')
 
-    def _declare_variable(self, inp, size=1, val=1.0, lower=None, upper=None):
+    def _declare_variable(self, inp, size=1, val=1.0, lower=None, upper=None,
+                          v_scal=1.0, f_scal=1.0):
         """ Adds a variable owned by the current ElementarySystem """
         var = self.get_id(inp)
         self.variables[var] = {'size': size,
                                'val': val,
                                'lower': lower,
                                'upper': upper,
+                               'v_scal': v_scal,
+                               'f_scal': f_scal,
                                }
 
     def _declare_argument(self, inp, indices=numpy.zeros(1)):
@@ -790,6 +799,8 @@ class NonlinearSolver(Solver):
         """ Computes the norm of the f Vec """
         system = self._system
         system.apply_F()
+        for var in system.vec['f']:
+            system.vec['f'][var][:] /= system.variables[var]['f_scal']
         system.vec['f'].petsc.assemble()
         return system.vec['f'].petsc.norm()
 
@@ -886,6 +897,12 @@ class LinearSolver(Solver):
         system.apply_dFdpu(system.variables.keys())
         system.rhs_vec.array[:] *= -1.0
         system.rhs_vec.array[:] += system.rhs_buf.array[:]
+        if system.mode == 'fwd':
+            for var in system.rhs_vec:
+                system.rhs_vec[var][:] /= system.variables[var]['f_scal']
+        elif system.mode == 'rev':
+            for var in system.rhs_vec:
+                system.rhs_vec[var][:] *= system.variables[var]['v_scal']
         system.rhs_vec.petsc.assemble()
         return system.rhs_vec.petsc.norm()
 
@@ -904,13 +921,21 @@ class LinearSolver(Solver):
         system.sol_vec.array[:] = system.sol_buf.array[:]
 
 
-class Identity(LinearSolver):
-    """ Identity mapping; no preconditioning """
+class Scaling(LinearSolver):
+    """ Apply scaling """
 
     def __call__(self, ilimit=10, atol=1e-6, rtol=1e-4):
         """ Just copy the rhs to the sol vector """
         system = self._system
         system.sol_vec.array[:] = system.rhs_vec.array[:]
+        if system.mode == 'fwd':
+            for var in system.sol_vec:
+                system.sol_vec[var][:] /= system.variables[var]['f_scal']  
+                system.sol_vec[var][:] *= system.variables[var]['v_scal']
+        elif system.mode == 'rev':
+            for var in system.sol_vec:
+                system.sol_vec[var][:] *= system.variables[var]['v_scal']
+                system.sol_vec[var][:] /= system.variables[var]['f_scal']  
 
 
 class KSP(LinearSolver):
