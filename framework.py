@@ -435,7 +435,8 @@ class System(object):
         for elemsystem in self.subsystems['elem']:
             sys = elemsystem.name, elemsystem.copy
             for arg in self.vec['p0'][sys]:
-                self.vec['p0'][sys][arg][:] = self.variables[arg]['u0']
+                self.vec['p0'][sys][arg][:] = \
+                    numpy.average(self.variables[arg]['u0'])
 
         return self
 
