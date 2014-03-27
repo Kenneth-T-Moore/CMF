@@ -624,7 +624,11 @@ class IndVar(ExplicitSystem):
 
     def _declare(self):
         """ Declares the variable """
-        self._declare_variable([self.name, self.copy], self.size, self.value)
+        kwargs = self.kwargs
+        u_scal = self.value if 'u_scal' not in kwargs else kwargs['u_scal']
+        f_scal = self.value if 'f_scal' not in kwargs else kwargs['f_scal']
+        self._declare_variable([self.name, self.copy], self.size, self.value,
+                               u_scal=u_scal, f_scal=f_scal)
 
     def apply_G(self):
         """ Set u to value """
