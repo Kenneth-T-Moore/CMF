@@ -119,14 +119,14 @@ class System(object):
 
         methods = {'NL': 'NEWTON',
                    'LN': 'KSP_PC',
-                   'PC': 'SCALNG',
+                   'PC': 'None',
                    'LS': 'BK_TKG',
                    }
         for problem in methods:
             if problem not in kwargs:
                 kwargs[problem] = methods[problem]
 
-        tolerances = {'NL_ilimit': 10, 'NL_atol': 1e-15, 'NL_rtol': 1e-6,
+        tolerances = {'NL_ilimit': 10, 'NL_atol': 1e-10, 'NL_rtol': 1e-6,
                       'LN_ilimit': 10, 'LN_atol': 1e-10, 'LN_rtol': 1e-4,
                       'PC_ilimit': 10, 'PC_atol': 1e-10, 'PC_rtol': 5e-1,
                       'LS_ilimit': 10, 'LS_atol': 1e-10, 'LS_rtol': 9e-1,
@@ -144,8 +144,9 @@ class System(object):
         self.arg_sizes = None
 
         self.vec = {'p': None, 'u': None, 'f': None,
-                    'dp': None, 'du': None, 'df': None, 
-                    'dg': None}
+                    'dp': None, 'du': None, 'df': None, 'dg': None,
+                    'lb': None, 'ub': None, 'u0': None, 'p0': None, 'f0': None,
+                    }
 
         self.app_ordering = None
         self.scatter_full = None
@@ -191,6 +192,31 @@ class System(object):
         """ Return a linspace vector of the right int type for PETSc """
         return numpy.array(numpy.linspace(start, end-1, end-start), 'i')
 
+    def _nln_init(self):
+        """ Apply scaling and local scatter """
+        self.scatter('nln')
+        self.vec['u'].array[:] *= self.vec['u0'].array[:]
+        self.vec['f'].array[:] *= self.vec['f0'].array[:]
+
+    def _nln_final(self):
+        """ Undo scaling """
+        self.vec['u'].array[:] /= self.vec['u0'].array[:]
+        self.vec['f'].array[:] /= self.vec['f0'].array[:]
+
+    def _lin_init(self):
+        """ Apply scaling and local scatter """
+        if self.mode == 'fwd':
+            self.scatter('lin')
+        self.vec['du'].array[:] *= self.vec['u0'].array[:]
+        self.vec['df'].array[:] *= self.vec['f0'].array[:]
+
+    def _lin_final(self):
+        """ Undo scaling and local scatter """
+        self.vec['du'].array[:] /= self.vec['u0'].array[:]
+        self.vec['df'].array[:] /= self.vec['f0'].array[:]
+        if self.mode == 'rev':
+            self.scatter('lin')
+
     def setup_1of7_comms(self, depth):
         """ Receives the communicator and distributes to subsystems """
         self._setup_1of7_comms_assign()
@@ -235,24 +261,26 @@ class System(object):
         for subsystem in self.subsystems['local']:
             subsystem.setup_3of7_sizes()
 
-    def setup_4of7_vecs(self, u_array, f_array, du_array, df_array):
+    def setup_4of7_vecs(self, arrays):
         """ Creates VarVecs and ArgVecs """
-        self.vec['u'] = VarVec(self, u_array)
-        self.vec['f'] = VarVec(self, f_array)
-        self.vec['du'] = VarVec(self, du_array)
-        self.vec['df'] = VarVec(self, df_array)
+        for vec in ['u', 'f', 'du', 'df']:
+            self.vec[vec] = VarVec(self, arrays[vec])
+        for vec in ['lb', 'ub', 'u0', 'f0']:
+            self.vec[vec] = VarVec(self, arrays[vec])
         self.vec['dg'] = self.vec['df']
 
         start, end = 0, 0
         for subsystem in self.subsystems['local']:
             end += numpy.sum(subsystem.var_sizes[subsystem.comm.rank, :])
-            subsystem.setup_4of7_vecs(u_array[start:end], f_array[start:end],
-                                      du_array[start:end], df_array[start:end])
+            subsystem.setup_4of7_vecs({vec: arrays[vec][start:end] for vec in
+                                       ['u', 'f', 'du', 'df', 
+                                        'lb', 'ub', 'u0', 'f0']})
             start += numpy.sum(subsystem.var_sizes[subsystem.comm.rank, :])
 
         arg_size = self.arg_sizes[self.comm.rank]
         self.vec['p'] = ArgVec(self, numpy.zeros(arg_size))
         self.vec['dp'] = ArgVec(self, numpy.zeros(arg_size))
+        self.vec['p0'] = ArgVec(self, numpy.zeros(arg_size))
 
     def setup_5of7_args(self):
         """ Propagates arg pointers down and up the system hierarchy """
@@ -262,12 +290,14 @@ class System(object):
                 for arg in self.vec['p'][elem]:
                     subsystem.vec['p'][elem][arg] = self.vec['p'][elem][arg]
                     subsystem.vec['dp'][elem][arg] = self.vec['dp'][elem][arg]
+                    subsystem.vec['p0'][elem][arg] = self.vec['p0'][elem][arg]
             subsystem.setup_5of7_args()
             for elemsystem in subsystem.subsystems['elem']:
                 elem = elemsystem.name, elemsystem.copy
                 for arg in subsystem.vec['p'][elem]:
                     self.vec['p'][elem][arg] = subsystem.vec['p'][elem][arg]
                     self.vec['dp'][elem][arg] = subsystem.vec['dp'][elem][arg]
+                    self.vec['p0'][elem][arg] = subsystem.vec['p0'][elem][arg]
 
     def setup_6of7_scatters(self):
         """ Setup PETSc scatters """
@@ -287,7 +317,7 @@ class System(object):
                               'NLN_JC': NonlinearJacobi(self),
                               'NLN_GS': NonlinearGS(self),
                               }  
-        self.solvers['LN'] = {'SCALNG': Scaling(self),
+        self.solvers['LN'] = {'None': Identity(self),
                               'KSP_PC': KSP(self),
                               'LIN_JC': LinearJacobi(self),
                               'LIN_GS': LinearGS(self),
@@ -311,12 +341,14 @@ class System(object):
             scatter = subsystem.scatter_partial
 
         if not scatter == None:
+            self.vec[var].array *= self.vec['u0'].array[:]
             if self.mode == 'fwd':
                 scatter.scatter(var_petsc, arg_petsc, addv=False, mode=False)
             elif self.mode == 'rev':
                 scatter.scatter(arg_petsc, var_petsc, addv=True, mode=True)
             else:
                 raise Exception('mode type not recognized')
+            self.vec[var].array /= self.vec['u0'].array[:]
 
     def apply_F(self):
         """ Evaluate function, (p,u) |-> f """
@@ -343,12 +375,6 @@ class System(object):
     def solve_precon(self):
         """ Apply preconditioner """
         kwargs = self.kwargs
-        if self.mode == 'fwd':
-            for var in self.rhs_vec:
-                self.rhs_vec[var][:] *= self.variables[var]['f_scal']
-        elif self.mode == 'rev':
-            for var in self.rhs_vec:
-                self.rhs_vec[var][:] /= self.variables[var]['v_scal']
         self.solvers['LN'][kwargs['PC']](ilimit=kwargs['PC_ilimit'],
                                          atol=kwargs['PC_atol'],
                                          rtol=kwargs['PC_rtol'])
@@ -389,16 +415,27 @@ class System(object):
         self.setup_3of7_sizes()
 
         size = numpy.sum(self.var_sizes[self.comm.rank, :])
-        zrs = numpy.zeros
-        self.setup_4of7_vecs(zrs(size), zrs(size), zrs(size), zrs(size))
+        self.setup_4of7_vecs({vec: numpy.zeros(size) for vec in
+                              ['u', 'f', 'du', 'df',
+                               'lb', 'ub', 'u0', 'f0']})
         self.setup_5of7_args()
         self.setup_6of7_scatters()
         self.setup_7of7_solvers()
         self.set_mode('fwd')
 
         for var in self.variables:
-            if self.variables[var] is not None:
-                self.vec['u'][var][:] = self.variables[var]['val']
+            variable = self.variables[var]
+            if variable is not None:
+                for vec in ['u', 'lb', 'ub', 'u0', 'f0']:
+                    self.vec[vec][var][:] = variable[vec]
+                self.vec['u'][var][:] /= variable['u0']
+                self.vec['lb'][var][:] /= variable['u0']
+                self.vec['ub'][var][:] /= variable['u0']
+
+        for elemsystem in self.subsystems['elem']:
+            sys = elemsystem.name, elemsystem.copy
+            for arg in self.vec['p0'][sys]:
+                self.vec['p0'][sys][arg][:] = self.variables[arg]['u0']
 
         return self
 
@@ -459,15 +496,15 @@ class ElementarySystem(System):
         raise Exception('This method must be implemented')
 
     def _declare_variable(self, inp, size=1, val=1.0, lower=None, upper=None,
-                          v_scal=1.0, f_scal=1.0):
+                          u_scal=1.0, f_scal=1.0):
         """ Adds a variable owned by the current ElementarySystem """
         var = self.get_id(inp)
         self.variables[var] = {'size': size,
-                               'val': val,
-                               'lower': lower,
-                               'upper': upper,
-                               'v_scal': v_scal,
-                               'f_scal': f_scal,
+                               'u': val,
+                               'lb': lower,
+                               'ub': upper,
+                               'u0': numpy.abs(u_scal),
+                               'f0': numpy.abs(f_scal),
                                }
 
     def _declare_argument(self, inp, indices=numpy.zeros(1)):
@@ -505,12 +542,14 @@ class ElementarySystem(System):
             vec['u'].array[:] += step * vec['du'].array
             for arg in self.arguments:
                 if arg in arguments:
-                    vec['p'][sys][arg][:] += step * vec['dp'][sys][arg][:]
+                    vec['p'][sys][arg][:] += vec['dp'][sys][arg][:] * \
+                        step / vec['p0'][sys][arg][:]
             self.apply_F()
             vec['u'].array[:] -= step * vec['du'].array
             for arg in self.arguments:
                 if arg in arguments:
-                    vec['p'][sys][arg][:] -= step * vec['dp'][sys][arg][:]
+                    vec['p'][sys][arg][:] -= vec['dp'][sys][arg][:] * \
+                        step / vec['p0'][sys][arg][:]
 
             vec['df'].array[:] += vec['f'].array
             vec['df'].array[:] /= step
@@ -799,8 +838,6 @@ class NonlinearSolver(Solver):
         """ Computes the norm of the f Vec """
         system = self._system
         system.apply_F()
-        for var in system.vec['f']:
-            system.vec['f'][var][:] /= system.variables[var]['f_scal']
         system.vec['f'].petsc.assemble()
         return system.vec['f'].petsc.norm()
 
@@ -827,23 +864,21 @@ class Backtracking(NonlinearSolver):
         """ Enforce bounds """
         system = self._system
 
+        u = system.vec['u'].array
+        du = system.vec['du'].array
+        lower = system.vec['lb'].array
+        upper = system.vec['ub'].array
         self.alpha = 1.0
-        for var in system.variables:
-            if system.variables[var] is not None:
-                u = system.vec['u'][var]
-                du = system.vec['du'][var]
-                lower = system.variables[var]['lower']
-                upper = system.variables[var]['upper']
-                if lower is not None:
-                    lower_const = u + self.alpha*du - lower
-                    ind = numpy.argmin(lower_const)
-                    if lower_const[ind] < 0:
-                        self.alpha = ((lower - u) / du)[ind]
-                if upper is not None:
-                    upper_const = upper - u - self.alpha*du
-                    ind = numpy.argmin(upper_const)
-                    if upper_const[ind] < 0:
-                        self.alpha = ((upper - u) / du)[ind]
+        if not numpy.isnan(lower).all():
+            lower_const = u + self.alpha*du - lower
+            ind = numpy.nanargmin(lower_const)
+            if lower_const[ind] < 0:
+                self.alpha = (lower[ind] - u[ind]) / du[ind]
+        if not numpy.isnan(upper).all():
+            upper_const = upper - u - self.alpha*du
+            ind = numpy.nanargmin(upper_const)
+            if upper_const[ind] < 0:
+                self.alpha = (upper[ind] - u[ind]) / du[ind]
         self.info = self.alpha
 
         norm0 = self._norm()
@@ -897,12 +932,6 @@ class LinearSolver(Solver):
         system.apply_dFdpu(system.variables.keys())
         system.rhs_vec.array[:] *= -1.0
         system.rhs_vec.array[:] += system.rhs_buf.array[:]
-        if system.mode == 'fwd':
-            for var in system.rhs_vec:
-                system.rhs_vec[var][:] /= system.variables[var]['f_scal']
-        elif system.mode == 'rev':
-            for var in system.rhs_vec:
-                system.rhs_vec[var][:] *= system.variables[var]['v_scal']
         system.rhs_vec.petsc.assemble()
         return system.rhs_vec.petsc.norm()
 
@@ -921,21 +950,13 @@ class LinearSolver(Solver):
         system.sol_vec.array[:] = system.sol_buf.array[:]
 
 
-class Scaling(LinearSolver):
-    """ Apply scaling """
+class Identity(LinearSolver):
+    """ Identity mapping; no preconditioning """
 
     def __call__(self, ilimit=10, atol=1e-6, rtol=1e-4):
         """ Just copy the rhs to the sol vector """
         system = self._system
         system.sol_vec.array[:] = system.rhs_vec.array[:]
-        if system.mode == 'fwd':
-            for var in system.sol_vec:
-                system.sol_vec[var][:] /= system.variables[var]['f_scal']  
-                system.sol_vec[var][:] *= system.variables[var]['v_scal']
-        elif system.mode == 'rev':
-            for var in system.sol_vec:
-                system.sol_vec[var][:] *= system.variables[var]['v_scal']
-                system.sol_vec[var][:] /= system.variables[var]['f_scal']  
 
 
 class KSP(LinearSolver):

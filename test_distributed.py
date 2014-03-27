@@ -11,14 +11,17 @@ class Var_yi(ImplicitSystem):
         self._declare_argument(['zi',-1])
 
     def apply_F(self):
+        self._nln_init()
         p, u, f = self.vec['p'], self.vec['u'], self.vec['f']
         x0 = p('x0')[0]
         xi = p(['xi',-1])[0]
         ai = p(['zi',-1])[0]
         yi = u(['yi',-1])[0]
         f(['yi',-1])[0] = yi - xi*ai**3 + x0*xi**2 - 1
+        self._nln_final()
 
     def apply_dFdpu(self, arguments):
+        self._lin_init()
         p, u, f = self.vec['p'], self.vec['u'], self.vec['f']
         dp, du, df = self.vec['dp'], self.vec['du'], self.vec['df']
         x0 = p('x0')[0]
@@ -35,6 +38,7 @@ class Var_yi(ImplicitSystem):
         dfdx0 = xi**2
         dfdxi = 2*xi*x0
         df(['yi',-1])[0] = dfdyi*dyi + dfdxi*dxi + dfdai*dai + dfdx0*dx0 + dfdxi*dxi
+        self._lin_final()
         
 
 class Var_zi(ImplicitSystem):
@@ -50,7 +54,7 @@ class Var_zi(ImplicitSystem):
             self._declare_argument(['zi',-1],[0])
 
     def apply_F(self):
-        self.scatter('nln')
+        self._nln_init()
         p, u, f = self.vec['p'], self.vec['u'], self.vec['f']
         x0 = p('x0')[0]
         xi = p(['xi',-1])[0]
@@ -63,9 +67,10 @@ class Var_zi(ImplicitSystem):
             ai = p(['zi',-1])[0]
             bi = u(['zi',-1])[0]
             f(['zi',-1])[0] = ai + bi
+        self._nln_final()
 
     def apply_dFdpu(self, arguments):
-        self.scatter('lin')
+        self._lin_init()
         p, u, f = self.vec['p'], self.vec['u'], self.vec['f']
         dp, du, df = self.vec['dp'], self.vec['du'], self.vec['df']
         x0 = p('x0')[0]
@@ -90,6 +95,7 @@ class Var_zi(ImplicitSystem):
             dai = dp(['zi',-1])[0]
             dbi = du(['zi',-1])[0]
             df(['zi',-1])[0] = dai + dbi
+        self._lin_final()
 
 main = \
     SerialSystem('main', subsystems=[
@@ -103,9 +109,9 @@ main = \
                                     ])
                             ], NL='NLN_GS')
                     for i in range(2)], NL='NLN_JC'),
-        ], NL='NEWTON').setup()
+        ], NL='NLN_GS').setup()
 
-print main.compute(False).array
+print main.compute().array
 
 if main(['yi',0]).comm is not None:
     print 'yi:', main(['yi',0]).check_derivatives()
