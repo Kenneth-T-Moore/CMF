@@ -109,14 +109,14 @@ main = \
                                     ])
                             ], NL='NLN_GS')
                     for i in range(2)], NL='NLN_JC'),
-        ], NL='NLN_GS').setup()
+        ], NL='NEWTON').setup()
 
 print main.compute().array
 
 if main(['yi',0]).comm is not None:
-    print 'yi:', main(['yi',0]).check_derivatives()
+    print 'yi:', main(['yi',0]).check_derivatives(main.variables.keys())
 if main(['zi',0]).comm is not None:
-    print 'zi:', main(['zi',0]).check_derivatives()
+    print 'zi:', main(['zi',0]).check_derivatives(main.variables.keys())
 
 h = 0.1
 v0 = numpy.array(main.compute(False).array)

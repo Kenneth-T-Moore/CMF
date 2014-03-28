@@ -16,7 +16,7 @@ class VarA(ImplicitSystem):
         #f = 2*a + 3*b - 5
         v['f']('a')[0] = f
 
-    def apply_dFdpu0(self, arguments):
+    def apply_dFdpu(self, arguments):
         v = self.vec
         a = v['u']('a')[0]
         b = v['p']('b')[0]
@@ -66,6 +66,6 @@ print main.compute()
 print main.compute_derivatives('fwd', 'a')
 
 if main('a').comm is not None:
-    print 'a:', main('a').check_derivatives()
+    print 'a:', main('a').check_derivatives(main.variables.keys())
 if main('b').comm is not None:
-    print 'b:', main('b').check_derivatives()
+    print 'b:', main('b').check_derivatives(main.variables.keys())

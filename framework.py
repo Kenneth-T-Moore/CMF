@@ -341,14 +341,14 @@ class System(object):
             scatter = subsystem.scatter_partial
 
         if not scatter == None:
-            self.vec[var].array *= self.vec['u0'].array[:]
+            self.vec[var].array[:] *= self.vec['u0'].array[:]
             if self.mode == 'fwd':
                 scatter.scatter(var_petsc, arg_petsc, addv=False, mode=False)
             elif self.mode == 'rev':
                 scatter.scatter(arg_petsc, var_petsc, addv=True, mode=True)
             else:
                 raise Exception('mode type not recognized')
-            self.vec[var].array /= self.vec['u0'].array[:]
+            self.vec[var].array[:] /= self.vec['u0'].array[:]
 
     def apply_F(self):
         """ Evaluate function, (p,u) |-> f """
@@ -462,16 +462,16 @@ class System(object):
         self.solve_dFdu()
         return self.sol_vec
 
-    def check_derivatives(self):
+    def check_derivatives(self, arguments):
         """ Check derivatives against FD """
         self.set_mode('fwd')
 
         self.rhs_vec.array[:] = 1.0
-        self.apply_dFdpu(self.variables.keys())
+        self.apply_dFdpu(arguments)
         derivs_user = numpy.array(self.rhs_vec.array)
 
         self.rhs_vec.array[:] = 1.0
-        self._apply_dFdpu_FD(self.variables.keys())
+        self._apply_dFdpu_FD(arguments)
         derivs_FD = numpy.array(self.rhs_vec.array)
 
         return derivs_user, derivs_FD
@@ -544,13 +544,13 @@ class ElementarySystem(System):
             for arg in self.arguments:
                 if arg in arguments:
                     vec['p'][sys][arg][:] += vec['dp'][sys][arg][:] * \
-                        step / vec['p0'][sys][arg][:]
+                        step * vec['p0'][sys][arg][:]
             self.apply_F()
             vec['u'].array[:] -= step * vec['du'].array
             for arg in self.arguments:
                 if arg in arguments:
                     vec['p'][sys][arg][:] -= vec['dp'][sys][arg][:] * \
-                        step / vec['p0'][sys][arg][:]
+                        step * vec['p0'][sys][arg][:]
 
             vec['df'].array[:] += vec['f'].array
             vec['df'].array[:] /= step
@@ -625,11 +625,7 @@ class IndVar(ExplicitSystem):
 
     def _declare(self):
         """ Declares the variable """
-        kwargs = self.kwargs
-        u_scal = self.value if 'u_scal' not in kwargs else kwargs['u_scal']
-        f_scal = self.value if 'f_scal' not in kwargs else kwargs['f_scal']
-        self._declare_variable([self.name, self.copy], self.size, self.value,
-                               u_scal=u_scal, f_scal=f_scal)
+        self._declare_variable([self.name, self.copy], self.size, self.value)
 
     def apply_G(self):
         """ Set u to value """
