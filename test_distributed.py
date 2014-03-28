@@ -33,11 +33,10 @@ class Var_yi(ImplicitSystem):
         dai = dp(['zi',-1])[0]
         dyi = du(['yi',-1])[0]
         dfdyi = 1.0
-        dfdxi = -ai**3
+        dfdxi = -ai**3 + 2*xi*x0
         dfdai = -3*ai**2*xi
         dfdx0 = xi**2
-        dfdxi = 2*xi*x0
-        df(['yi',-1])[0] = dfdyi*dyi + dfdxi*dxi + dfdai*dai + dfdx0*dx0 + dfdxi*dxi
+        df(['yi',-1])[0] = dfdyi*dyi + dfdxi*dxi + dfdai*dai + dfdx0*dx0
         self._lin_final()
         
 
@@ -124,4 +123,4 @@ d = numpy.array(main.compute_derivatives('fwd', 'x0', output=False).array)
 main('x0').value += h
 v = numpy.array(main.compute(False).array)
 
-print (v-v0)/h, d
+print main.comm.rank, 'total derivatives', (v-v0)/h, d

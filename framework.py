@@ -462,20 +462,6 @@ class System(object):
         self.solve_dFdu()
         return self.sol_vec
 
-    def check_derivatives(self, arguments):
-        """ Check derivatives against FD """
-        self.set_mode('fwd')
-
-        self.rhs_vec.array[:] = 1.0
-        self.apply_dFdpu(arguments)
-        derivs_user = numpy.array(self.rhs_vec.array)
-
-        self.rhs_vec.array[:] = 1.0
-        self._apply_dFdpu_FD(arguments)
-        derivs_FD = numpy.array(self.rhs_vec.array)
-
-        return derivs_user, derivs_FD
-
 
 class ElementarySystem(System):
     """ Nonlinear system with no subsystems """
@@ -558,6 +544,26 @@ class ElementarySystem(System):
     def apply_dFdpu(self, arguments):
         """ Finite difference directional derivative """
         self._apply_dFdpu_FD(arguments)
+
+    def check_derivatives(self, arguments):
+        """ Check derivatives against FD """
+        self.set_mode('fwd')
+
+        self.vec['du'].array[:] = 1.0
+        for sys in self.vec['dp']:
+            for arg in self.vec['dp'][sys]:
+                self.vec['dp'][sys][arg][:] = 1.0
+        self.apply_dFdpu(arguments)
+        derivs_user = numpy.array(self.vec['df'].array)
+
+        self.vec['du'].array[:] = 1.0
+        for sys in self.vec['dp']:
+            for arg in self.vec['dp'][sys]:
+                self.vec['dp'][sys][arg][:] = 1.0
+        self._apply_dFdpu_FD(arguments)
+        derivs_FD = numpy.array(self.vec['df'].array)
+
+        return derivs_user, derivs_FD
 
 
 class ImplicitSystem(ElementarySystem):
