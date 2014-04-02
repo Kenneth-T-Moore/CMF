@@ -529,14 +529,12 @@ class ElementarySystem(System):
             vec['u'].array[:] += step * vec['du'].array
             for arg in self.arguments:
                 if arg in arguments:
-                    vec['p'][sys][arg][:] += vec['dp'][sys][arg][:] * \
-                        step * vec['p0'][sys][arg][:]
+                    vec['p'][sys][arg][:] += vec['dp'][sys][arg][:] * step
             self.apply_F()
             vec['u'].array[:] -= step * vec['du'].array
             for arg in self.arguments:
                 if arg in arguments:
-                    vec['p'][sys][arg][:] -= vec['dp'][sys][arg][:] * \
-                        step * vec['p0'][sys][arg][:]
+                    vec['p'][sys][arg][:] -= vec['dp'][sys][arg][:] * step
 
             vec['df'].array[:] += vec['f'].array
             vec['df'].array[:] /= step
