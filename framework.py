@@ -117,6 +117,9 @@ class System(object):
             for subsystem in self.subsystems['global']:
                 self.kwargs['req_nprocs'] += subsystem.kwargs['req_nprocs']
 
+        if 'print' not in self.kwargs:
+            self.kwargs['print'] = True
+
         methods = {'NL': 'NEWTON',
                    'LN': 'KSP_PC',
                    'PC': 'None',
@@ -588,14 +591,12 @@ class ExplicitSystem(ElementarySystem):
             self.scatter('lin')
             self.apply_dGdp(arguments)
             vec['df'].array[:] *= -1.0
-            if (self.name, self.copy) in arguments:
-                vec['df'].array[:] += vec['du'].array[:]
+            vec['df'].array[:] += vec['du'].array[:]
         elif self.mode == 'rev':
             vec['df'].array[:] *= -1.0
             self.apply_dGdp(arguments)
             vec['df'].array[:] *= -1.0
-            if (self.name, self.copy) in arguments:
-                vec['du'].array[:] = vec['df'].array[:]
+            vec['du'].array[:] = vec['df'].array[:]
             self.scatter('lin')
 
     def solve_F(self):
@@ -829,7 +830,7 @@ class Solver(object):
     def print_info(self, counter, residual):
         """ Print output from an iteration """
         system = self._system
-        if system.comm.rank == 0 and system.output:
+        if system.comm.rank == 0 and system.output and system.kwargs['print']:
             print ('%' + str(3*system.depth) + 's' +
                    '[%-5s,%3i] %s %3i | %.8e %s') \
                    % ('', system.name, system.copy, self.METHOD,
