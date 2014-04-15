@@ -20,14 +20,25 @@ class VarA(ImplicitSystem):
         v = self.vec
         a = v['u']('a')[0]
         b = v['p']('b')[0]
-        da = v['du']('a')[0]
-        db = v['dp']('b')[0]
+        df = v['df']('a')
+        da = v['du']('a')
+        db = v['dp']('b')
         dFda = -3*a**2
         dFdb = 1
         #dFda = 2
         #dFdb = 3
-        v['df']('a')[0] = dFda * da + dFdb * db
-
+        if self.mode == 'fwd':
+            df[0] = 0.0
+            if self.get_id('a') in arguments:
+                df[0] += dFda * da[0]
+            if self.get_id('b') in arguments:
+                df[0] += dFdb * db[0]
+        elif self.mode == 'rev':
+            if self.get_id('a') in arguments:
+                da[0] = dFda * df[0]
+            if self.get_id('b') in arguments:
+                db[0] = dFdb * df[0]
+                
 
 class VarB(ImplicitSystem):
 
@@ -47,13 +58,24 @@ class VarB(ImplicitSystem):
         v = self.vec
         a = v['p']('a')[0]
         b = v['u']('b')[0]
-        da = v['dp']('a')[0]
-        db = v['du']('b')[0]
+        df = v['df']('b')
+        da = v['dp']('a')
+        db = v['du']('b')
         dFda = numpy.exp(-a)
         dFdb = 1
         #dFda = 1
         #dFdb = 2
-        v['df']('b')[0] = dFda * da + dFdb * db
+        if self.mode == 'fwd':
+            df[0] = 0.0
+            if self.get_id('a') in arguments:
+                df[0] += dFda * da[0]
+            if self.get_id('b') in arguments:
+                df[0] += dFdb * db[0]
+        elif self.mode == 'rev':
+            if self.get_id('a') in arguments:
+                da[0] = dFda * df[0]
+            if self.get_id('b') in arguments:
+                db[0] = dFdb * df[0]
 
 
 main = SerialSystem('main', subsystems=[
@@ -63,9 +85,10 @@ main = SerialSystem('main', subsystems=[
 
 
 print main.compute()
-print main.compute_derivatives('fwd', 'a')
+print main.compute_derivatives('fwd', 'a', output=False)
+print main.compute_derivatives('fwd', 'b', output=False)
+print main.compute_derivatives('rev', 'a', output=False)
+print main.compute_derivatives('rev', 'b', output=False)
 
-if main('a').comm is not None:
-    print 'a:', main('a').check_derivatives(main.variables.keys())
-if main('b').comm is not None:
-    print 'b:', main('b').check_derivatives(main.variables.keys())
+print main.check_derivatives('fwd', 'a')
+print main.check_derivatives('rev', 'a')

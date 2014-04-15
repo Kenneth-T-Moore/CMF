@@ -389,12 +389,17 @@ class System(object):
                                          atol=kwargs['LS_atol'],
                                          rtol=kwargs['LS_rtol'])
 
+    def linearize(self):
+        """ Instruction to pre-compute/assemble/factorize Jacobian """
+        for subsystem in self.subsystems['local']:
+            subsystem.linearize()
+
     def get_id(self, inp):
         """ Return name, copy even when copy not specified """
         if not (isinstance(inp, list) or isinstance(inp, tuple)):
-            return inp, 0
+            return inp, self.copy #0
         elif len(inp) == 1:
-            return inp[0], 0
+            return inp[0], self.copy #0
         elif inp[1] == -1:
             return inp[0], self.copy
         else:
@@ -465,6 +470,61 @@ class System(object):
         self.solve_dFdu()
         return self.sol_vec
 
+    def check_derivatives(self, mode, elemsys, arguments=None):
+        elemsystem = self(elemsys)
+        if elemsystem is None:
+            return
+
+        vec = elemsystem.vec
+        if arguments is None:
+            arguments = elemsystem.variables.keys()
+            for sys in elemsystem.vec['p']:
+                for arg in elemsystem.vec['p'][sys]:
+                    arguments.append(arg)
+
+        if mode == 'fwd':
+            self.set_mode('fwd')
+
+            for var in elemsystem.variables:
+                if var in arguments:
+                    vec['du'][var][:] = 1.0
+            for sys in vec['dp']:
+                for arg in vec['dp'][sys]:
+                    if arg in arguments:
+                        vec['dp'][sys][arg][:] = 1.0
+            elemsystem.apply_dFdpu(arguments)
+            derivs_user = numpy.array(vec['df'].array)
+            elemsystem._apply_dFdpu_FD(arguments)
+            derivs_FD = numpy.array(vec['df'].array)
+
+            return numpy.linalg.norm(derivs_user - derivs_FD)
+        elif mode == 'rev':
+            self.set_mode('fwd')
+
+            for var in elemsystem.variables:
+                if var in arguments:
+                    vec['du'][var][:] = 1.0
+            for sys in vec['dp']:
+                for arg in vec['dp'][sys]:
+                    if arg in arguments:
+                        vec['dp'][sys][arg][:] = 1.0
+            elemsystem.apply_dFdpu(arguments)
+            y = numpy.array(vec['df'].array)
+
+            self.set_mode('rev')
+            elemsystem.apply_dFdpu(arguments)
+
+            xTATy = 0
+            for var in elemsystem.variables:
+                if var in arguments:
+                    xTATy += numpy.sum(vec['du'][var])
+            for sys in vec['dp']:
+                for arg in vec['dp'][sys]:
+                    if arg in arguments:
+                        xTATy += numpy.sum(vec['dp'][sys][arg])
+
+            return numpy.sqrt(numpy.abs(xTATy - numpy.dot(y,y)))
+
 
 class ElementarySystem(System):
     """ Nonlinear system with no subsystems """
@@ -529,15 +589,23 @@ class ElementarySystem(System):
             self.apply_F()
             vec['df'].array[:] = -vec['f'].array
 
-            vec['u'].array[:] += step * vec['du'].array
-            for arg in self.arguments:
-                if arg in arguments:
-                    vec['p'][sys][arg][:] += vec['dp'][sys][arg][:] * step
+            for var in self.variables:
+                if var in arguments:
+                    vec['u'][var][:] += step * vec['du'][var]
+            for sys in vec['p']:
+                for arg in vec['p'][sys]:
+                    if arg in arguments:
+                        vec['p'][sys][arg][:] += vec['dp'][sys][arg][:] * step
+
             self.apply_F()
-            vec['u'].array[:] -= step * vec['du'].array
-            for arg in self.arguments:
-                if arg in arguments:
-                    vec['p'][sys][arg][:] -= vec['dp'][sys][arg][:] * step
+
+            for var in self.variables:
+                if var in arguments:
+                    vec['u'][var][:] -= step * vec['du'][var]
+            for sys in vec['p']:
+                for arg in vec['p'][sys]:
+                    if arg in arguments:
+                        vec['p'][sys][arg][:] -= vec['dp'][sys][arg][:] * step
 
             vec['df'].array[:] += vec['f'].array
             vec['df'].array[:] /= step
@@ -545,26 +613,6 @@ class ElementarySystem(System):
     def apply_dFdpu(self, arguments):
         """ Finite difference directional derivative """
         self._apply_dFdpu_FD(arguments)
-
-    def check_derivatives(self, arguments):
-        """ Check derivatives against FD """
-        self.set_mode('fwd')
-
-        self.vec['du'].array[:] = 1.0
-        for sys in self.vec['dp']:
-            for arg in self.vec['dp'][sys]:
-                self.vec['dp'][sys][arg][:] = 1.0
-        self.apply_dFdpu(arguments)
-        derivs_user = numpy.array(self.vec['df'].array)
-
-        self.vec['du'].array[:] = 1.0
-        for sys in self.vec['dp']:
-            for arg in self.vec['dp'][sys]:
-                self.vec['dp'][sys][arg][:] = 1.0
-        self._apply_dFdpu_FD(arguments)
-        derivs_FD = numpy.array(self.vec['df'].array)
-
-        return derivs_user, derivs_FD
 
 
 class ImplicitSystem(ElementarySystem):
@@ -578,7 +626,7 @@ class ExplicitSystem(ElementarySystem):
     def apply_F(self):
         """ F_i(p_i,u_i) = u_i - G_i(p_i) = 0 """
         vec = self.vec
-        self.scatter('nln')
+        self._nln_init()
         vec['f'].array[:] = vec['u'].array[:]
         self.apply_G()
         vec['f'].array[:] -= vec['u'].array[:]
@@ -587,17 +635,21 @@ class ExplicitSystem(ElementarySystem):
     def apply_dFdpu(self, arguments):
         """ df = du - dGdp * dp or du = df and dp = -dGdp^T * df """
         vec = self.vec
+        self._lin_init()
         if self.mode == 'fwd':
-            self.scatter('lin')
             self.apply_dGdp(arguments)
             vec['df'].array[:] *= -1.0
-            vec['df'].array[:] += vec['du'].array[:]
+            for var in self.variables:
+                if var in arguments:
+                    vec['df'][var][:] += vec['du'][var][:]
         elif self.mode == 'rev':
             vec['df'].array[:] *= -1.0
             self.apply_dGdp(arguments)
             vec['df'].array[:] *= -1.0
-            vec['du'].array[:] = vec['df'].array[:]
-            self.scatter('lin')
+            for var in self.variables:
+                if var in arguments:
+                    vec['du'][var][:] = vec['df'][var][:]
+        self._lin_final()
 
     def solve_F(self):
         """ v_i = V_i(v_{j!=i}) """
@@ -857,6 +909,7 @@ class Newton(NonlinearSolver):
         """ Find a search direction and apply a line search """
         system = self._system
         system.vec['df'].array[:] = -system.vec['f'].array[:]
+        system.linearize()
         system.solve_dFdu()
         system.solve_line_search()
 
