@@ -90,5 +90,4 @@ print main.compute_derivatives('fwd', 'b', output=False)
 print main.compute_derivatives('rev', 'a', output=False)
 print main.compute_derivatives('rev', 'b', output=False)
 
-print main.check_derivatives('fwd', 'a')
-print main.check_derivatives('rev', 'a')
+main.check_derivatives_all()

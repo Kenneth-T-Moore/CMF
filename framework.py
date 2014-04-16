@@ -446,7 +446,14 @@ class System(object):
                 self.vec['p0'][sys][arg][:] = \
                     numpy.average(self.variables[arg]['u0'])
 
+        self.local_initialize()
+
         return self
+
+    def local_initialize(self):
+        """ Optional method for elemsystems after framework has initialized """
+        for subsystem in self.subsystems['local']:
+            subsystem.local_initialize()
 
     def compute(self, output=True):
         """ Solves system """
@@ -457,6 +464,8 @@ class System(object):
     def compute_derivatives(self, mode, var, ind=0, output=True):
         """ Solves derivatives of system (direct/adjoint) """
         self.set_mode(mode, output)
+        self.linearize()
+
         self.rhs_vec.array[:] = 0.0
 
         ivar = self.variables.keys().index(self.get_id(var))
@@ -471,6 +480,7 @@ class System(object):
         return self.sol_vec
 
     def check_derivatives(self, mode, elemsys, arguments=None):
+        self.linearize()
         elemsystem = self(elemsys)
         if elemsystem is None:
             return
@@ -497,7 +507,8 @@ class System(object):
             elemsystem._apply_dFdpu_FD(arguments)
             derivs_FD = numpy.array(vec['df'].array)
 
-            return numpy.linalg.norm(derivs_user - derivs_FD)
+            return numpy.linalg.norm(derivs_user - derivs_FD) / \
+                numpy.sqrt(self.vec['u'].array.shape[0])
         elif mode == 'rev':
             self.set_mode('fwd')
 
@@ -523,7 +534,24 @@ class System(object):
                     if arg in arguments:
                         xTATy += numpy.sum(vec['dp'][sys][arg])
 
-            return numpy.sqrt(numpy.abs(xTATy - numpy.dot(y,y)))
+            return numpy.sqrt(numpy.abs(xTATy - numpy.dot(y,y))) / \
+                numpy.sqrt(self.vec['u'].array.shape[0])
+
+    def check_derivatives_all(self, fwd=True, rev=True, length=14):
+        print 'Checking derivatives'
+        for elemsystem in self.subsystems['elem']:
+            name, copy = elemsystem.name, elemsystem.copy
+
+            arguments = elemsystem.variables.keys()
+            for sys in elemsystem.vec['p']:
+                for arg in elemsystem.vec['p'][sys]:
+                    arguments.append(arg)
+
+            for arg in arguments:
+                print ('%' + str(length) + 's %3i %13s %17.10e %17.10e') % \
+                    (name, copy, arg[0],
+                     self.check_derivatives('fwd', [name, copy], [arg]),
+                     self.check_derivatives('rev', [name, copy], [arg]))
 
 
 class ElementarySystem(System):
@@ -873,12 +901,6 @@ class Solver(object):
         """ Operation executed in each iteration """
         pass
 
-    def _initialize(self):
-        """ Commands run before iteration """
-        norm = self._norm()
-        norm0 = norm if norm != 0.0 else 1.0
-        return norm0, norm
-
     def print_info(self, counter, residual):
         """ Print output from an iteration """
         system = self._system
@@ -891,6 +913,15 @@ class Solver(object):
 
 class NonlinearSolver(Solver):
     """ A base class for nonlinear solvers """
+
+    def _initialize(self):
+        """ Commands run before iteration """
+        if self._system.kwargs['NL_ilimit'] > 1:
+            norm = self._norm()
+        else:
+            norm = 1.0
+        norm0 = norm if norm != 0.0 else 1.0
+        return norm0, norm
 
     def _norm(self):
         """ Computes the norm of the f Vec """
@@ -999,7 +1030,10 @@ class LinearSolver(Solver):
         system = self._system
         system.rhs_buf.array[:] = system.rhs_vec.array[:]
         system.sol_buf.array[:] = system.sol_vec.array[:]
-        norm = self._norm()
+        if system.kwargs['LN_ilimit'] > 1:
+            norm = self._norm()
+        else:
+            norm = 1.0
         norm0 = norm if norm != 0.0 else 1.0
         return norm0, norm
 
