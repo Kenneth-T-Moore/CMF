@@ -130,7 +130,7 @@ class System(object):
                 kwargs[problem] = methods[problem]
 
         tolerances = {'NL_ilimit': 10, 'NL_atol': 1e-10, 'NL_rtol': 1e-6,
-                      'LN_ilimit': 10, 'LN_atol': 1e-10, 'LN_rtol': 1e-4,
+                      'LN_ilimit': 10, 'LN_atol': 1e-10, 'LN_rtol': 1e-6,
                       'PC_ilimit': 10, 'PC_atol': 1e-10, 'PC_rtol': 5e-1,
                       'LS_ilimit': 10, 'LS_atol': 1e-10, 'LS_rtol': 9e-1,
                       }
@@ -443,8 +443,11 @@ class System(object):
         for elemsystem in self.subsystems['elem']:
             sys = elemsystem.name, elemsystem.copy
             for arg in self.vec['p0'][sys]:
-                self.vec['p0'][sys][arg][:] = \
-                    numpy.average(self.variables[arg]['u0'])
+                if self.variables[arg] is not None:
+                    self.vec['p0'][sys][arg][:] = \
+                        numpy.average(self.variables[arg]['u0'])
+                else:
+                    self.vec['p0'][sys][arg][:] = 1.0
 
         self.local_initialize()
 
@@ -480,10 +483,10 @@ class System(object):
         return self.sol_vec
 
     def check_derivatives(self, mode, elemsys, arguments=None):
-        self.linearize()
         elemsystem = self(elemsys)
         if elemsystem is None:
             return
+        elemsystem.linearize()
 
         vec = elemsystem.vec
         if arguments is None:
@@ -537,9 +540,13 @@ class System(object):
             return numpy.sqrt(numpy.abs(xTATy - numpy.dot(y,y))) / \
                 numpy.sqrt(self.vec['u'].array.shape[0])
 
-    def check_derivatives_all(self, fwd=True, rev=True, length=14):
+    def check_derivatives_all(self, elemsystems=None,
+                              fwd=True, rev=True, length=14):
+        if elemsystems is None:
+            elemsystems = self.subsystems['elem']
+
         print 'Checking derivatives'
-        for elemsystem in self.subsystems['elem']:
+        for elemsystem in elemsystems:
             name, copy = elemsystem.name, elemsystem.copy
 
             arguments = elemsystem.variables.keys()
@@ -547,11 +554,24 @@ class System(object):
                 for arg in elemsystem.vec['p'][sys]:
                     arguments.append(arg)
 
+            print
             for arg in arguments:
                 print ('%' + str(length) + 's %3i %13s %17.10e %17.10e') % \
                     (name, copy, arg[0],
                      self.check_derivatives('fwd', [name, copy], [arg]),
                      self.check_derivatives('rev', [name, copy], [arg]))
+
+    def print_solution(self, dat='u', length=14):
+        """ Print min, average, and max of all variables """
+        print 'Printing solution:', dat
+
+        for var in self.variables:
+            name, copy = var
+            var_min = numpy.min(self.vec[dat][var])
+            var_avg = numpy.average(self.vec[dat][var])
+            var_max = numpy.max(self.vec[dat][var])
+            print ('%' + str(length) + 's %4i %17.10e %17.10e %17.10e') % \
+                (name, copy, var_min, var_avg, var_max)
 
 
 class ElementarySystem(System):
@@ -665,6 +685,7 @@ class ExplicitSystem(ElementarySystem):
         vec = self.vec
         self._lin_init()
         if self.mode == 'fwd':
+            vec['df'].array[:] = 0.0
             self.apply_dGdp(arguments)
             vec['df'].array[:] *= -1.0
             for var in self.variables:
@@ -674,15 +695,26 @@ class ExplicitSystem(ElementarySystem):
             vec['df'].array[:] *= -1.0
             self.apply_dGdp(arguments)
             vec['df'].array[:] *= -1.0
+            vec['du'].array[:] = 0.0
             for var in self.variables:
                 if var in arguments:
-                    vec['du'][var][:] = vec['df'][var][:]
+                    vec['du'][var][:] += vec['df'][var][:]
         self._lin_final()
 
     def solve_F(self):
         """ v_i = V_i(v_{j!=i}) """
         self.scatter('nln')
         self.apply_G()
+
+    def solve_dFdu(self):
+        """ Inverse of the identity matrix """
+        vec = self.vec
+        if self.mode == 'fwd':
+            for var in self.variables:
+                vec['du'][var][:] = vec['df'][var][:]
+        elif self.mode == 'rev':
+            for var in self.variables:
+                vec['df'][var][:] = vec['du'][var][:]        
 
     def apply_G(self):
         """ Must be implemented by user """
@@ -727,10 +759,13 @@ class CompoundSystem(System):
 
     def __call__(self, inp):
         """ Return instance if found else None """
-        for subsystem in self.subsystems['global']:
-            result = subsystem(inp)
-            if result is not None:
-                return result
+        if self.get_id(inp) == (self.name, self.copy):
+            return self
+        else:
+            for subsystem in self.subsystems['global']:
+                result = subsystem(inp)
+                if result is not None:
+                    return result
         return None
 
     def _setup_6of7_scatters_declare(self):
@@ -1019,6 +1054,7 @@ class LinearSolver(Solver):
     def _norm(self):
         """ Computes the norm of the linear residual """
         system = self._system
+        system.rhs_vec.array[:] = 0.0
         system.apply_dFdpu(system.variables.keys())
         system.rhs_vec.array[:] *= -1.0
         system.rhs_vec.array[:] += system.rhs_buf.array[:]
@@ -1121,7 +1157,7 @@ class LinearJacobi(LinearSolver):
 
     METHOD = '   LN: LIN_JC'
 
-    def _operation(self):
+    def _operation2(self):
         """ Parallel block solve of D x = b - (L+U) x """
         system = self._system
 
@@ -1130,6 +1166,7 @@ class LinearJacobi(LinearSolver):
         for subsystem in system.subsystems['local']:
             args = [v for v in system.variables 
                     if v not in subsystem.variables]
+            subsystem.rhs_vec.array[:] = 0.0
             subsystem.apply_dFdpu(args)
         if system.mode == 'rev':
             system.scatter('lin')
@@ -1138,6 +1175,35 @@ class LinearJacobi(LinearSolver):
         system.rhs_vec.array[:] += system.rhs_buf.array[:]
         for subsystem in system.subsystems['local']:
             subsystem.solve_dFdu()
+
+    def _operation(self):
+        """ Serial block solve of D x = b - (L+U) x """
+        system = self._system
+
+        if system.mode == 'fwd':
+            system.scatter('lin')
+            for subsystem in system.subsystems['local']:
+                args = [v for v in system.variables 
+                        if v not in subsystem.variables]
+                subsystem.apply_dFdpu(args)
+
+            system.rhs_vec.array[:] *= -1.0
+            system.rhs_vec.array[:] += system.rhs_buf.array[:]
+            for subsystem in system.subsystems['local']:
+                subsystem.solve_dFdu()
+        elif system.mode == 'rev':
+            system.sol_buf.array[:] = system.rhs_buf.array[:]
+            for subsystem in system.subsystems['local']:
+                args = [v for v in system.variables 
+                        if v not in subsystem.variables]
+                system.rhs_vec.array[:] = 0.0
+                subsystem.apply_dFdpu(args)
+                system.scatter('lin', subsystem)
+                system.sol_buf.array[:] -= system.rhs_vec.array[:]
+
+            system.rhs_vec.array[:] = system.sol_buf.array[:]
+            for subsystem in system.subsystems['local']:
+                subsystem.solve_dFdu()
 
 
 class LinearGS(LinearSolver):
@@ -1149,25 +1215,31 @@ class LinearGS(LinearSolver):
         """ Serial block solve of D x = b - (L+U) x """
         system = self._system
 
-        if system.mode == 'rev':
-            system.subsystems['local'].reverse()
-
-        system.sol_buf.array[:] = system.rhs_buf.array[:]
-        for subsystem in system.subsystems['local']:
-            system.rhs_vec.array[:] = 0.0
-
-            if system.mode == 'fwd':
+        if system.mode == 'fwd':
+            for subsystem in system.subsystems['local']:
                 system.scatter('lin', subsystem)
-            args = [v for v in system.variables 
-                    if v not in subsystem.variables]
-            subsystem.apply_dFdpu(args)
-            if system.mode == 'rev':
-                system.scatter('lin', subsystem)
+                args = [v for v in system.variables 
+                        if v not in subsystem.variables]
+                system.rhs_vec.array[:] = 0.0
+                subsystem.apply_dFdpu(args)
 
-            system.sol_buf.array[:] -= system.rhs_vec.array[:]
-
-            system.rhs_vec.array[:] = system.sol_buf.array[:]
-            subsystem.solve_dFdu()
-
-        if system.mode == 'rev':
+                system.rhs_vec.array[:] *= -1.0
+                system.rhs_vec.array[:] += system.rhs_buf.array[:]
+                subsystem.solve_dFdu()
+        elif system.mode == 'rev':
             system.subsystems['local'].reverse()
+            for subsystem in system.subsystems['local']:
+                system.sol_buf.array[:] = system.rhs_buf.array[:]
+                for subsystem2 in system.subsystems['local']:
+                    if subsystem is not subsystem2:
+                        args = [v for v in system.variables 
+                                if v not in subsystem2.variables]
+                        system.rhs_vec.array[:] = 0.0
+                        subsystem2.apply_dFdpu(args)
+                        system.scatter('lin', subsystem2)
+                        system.sol_buf.array[:] -= system.rhs_vec.array[:]
+                system.rhs_vec.array[:] = system.sol_buf.array[:]
+                subsystem.solve_dFdu()
+                
+            system.subsystems['local'].reverse()
+            
