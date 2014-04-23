@@ -474,15 +474,14 @@ class System(object):
 
     def compute_derivatives(self, mode, var, ind=0, output=True):
         """ Solves derivatives of system (direct/adjoint) """
-        self.vec['du'].array[:] = 0.0
-        self.vec['df'].array[:] = 0.0
+        self.set_mode(mode, output)
+        self.rhs_vec.array[:] = 0.0
         for elemsystem in self.subsystems['elem']:
             sys = elemsystem.name, elemsystem.copy
             for arg in self.vec['dp'][sys]:
                 if self.variables[arg] is not None:
                     self.vec['dp'][sys][arg][:] = 0.0     
 
-        self.set_mode(mode, output)
         self.linearize()
 
         self.rhs_vec.array[:] = 0.0
@@ -499,7 +498,6 @@ class System(object):
         return self.sol_vec
 
     def check_derivatives(self, mode, elemsys, arguments=None):
-        self.vec['du'].array[:] = 0.0
         self.vec['df'].array[:] = 0.0
         for elemsystem in self.subsystems['elem']:
             sys = elemsystem.name, elemsystem.copy
