@@ -117,8 +117,10 @@ class System(object):
             for subsystem in self.subsystems['global']:
                 self.kwargs['req_nprocs'] += subsystem.kwargs['req_nprocs']
 
-        if 'print' not in self.kwargs:
-            self.kwargs['print'] = True
+        if 'output' not in self.kwargs:
+            self.output = False
+        else:
+            self.output = self.kwargs['output']
 
         methods = {'NL': 'NEWTON',
                    'LN': 'KSP_PC',
@@ -156,7 +158,6 @@ class System(object):
         self.scatter_partial = None
 
         self.mode = 'fwd'
-        self.output = True
 
         self.sol_vec = None
         self.rhs_vec = None
@@ -413,12 +414,14 @@ class System(object):
         else:
             return inp[0], inp[1]
 
-    def set_mode(self, mode, output=True):
+    def set_mode(self, mode, output=None):
         """ Set to fwd or rev mode """
         self.mode = mode
-        self.output = output
         self.sol_vec = self.vec[{'fwd': 'du', 'rev': 'df'}[mode]]
         self.rhs_vec = self.vec[{'fwd': 'df', 'rev': 'du'}[mode]]
+
+        if output is not None:
+            self.output = output
 
         for subsystem in self.subsystems['local']:
             subsystem.set_mode(mode, output)
@@ -466,13 +469,13 @@ class System(object):
         for subsystem in self.subsystems['local']:
             subsystem.local_initialize()
 
-    def compute(self, output=True):
+    def compute(self, output=None):
         """ Solves system """
         self.set_mode('fwd', output)
         self.solve_F()
         return self.vec['u']
 
-    def compute_derivatives(self, mode, var, ind=0, output=True):
+    def compute_derivatives(self, mode, var, ind=0, output=None):
         """ Solves derivatives of system (direct/adjoint) """
         self.set_mode(mode, output)
         self.rhs_vec.array[:] = 0.0
@@ -564,7 +567,7 @@ class System(object):
                 numpy.sqrt(self.vec['u'].array.shape[0])
 
     def check_derivatives_all(self, elemsystems=None,
-                              fwd=True, rev=True, length=14):
+                              fwd=False, rev=False, length=14):
         if elemsystems is None:
             elemsystems = self.subsystems['elem']
 
@@ -962,7 +965,7 @@ class Solver(object):
     def print_info(self, counter, residual):
         """ Print output from an iteration """
         system = self._system
-        if system.comm.rank == 0 and system.output and system.kwargs['print']:
+        if system.comm.rank == 0 and system.output:
             print ('%' + str(3*system.depth) + 's' +
                    '[%-5s,%3i] %s %3i | %.8e %s') \
                    % ('', system.name, system.copy, self.METHOD,
