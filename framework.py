@@ -200,21 +200,29 @@ class System(object):
         self.scatter('nln')
         self.vec['u'].array[:] *= self.vec['u0'].array[:]
         self.vec['f'].array[:] *= self.vec['f0'].array[:]
+        self.vec['du'].array[:] *= self.vec['u0'].array[:]
+        self.vec['df'].array[:] *= self.vec['f0'].array[:]
 
     def _nln_final(self):
         """ Undo scaling """
         self.vec['u'].array[:] /= self.vec['u0'].array[:]
         self.vec['f'].array[:] /= self.vec['f0'].array[:]
+        self.vec['du'].array[:] /= self.vec['u0'].array[:]
+        self.vec['df'].array[:] /= self.vec['f0'].array[:]
 
     def _lin_init(self):
         """ Apply scaling and local scatter """
         if self.mode == 'fwd':
             self.scatter('lin')
+        self.vec['u'].array[:] *= self.vec['u0'].array[:]
+        self.vec['f'].array[:] *= self.vec['f0'].array[:]
         self.vec['du'].array[:] *= self.vec['u0'].array[:]
         self.vec['df'].array[:] *= self.vec['f0'].array[:]
 
     def _lin_final(self):
         """ Undo scaling and local scatter """
+        self.vec['u'].array[:] /= self.vec['u0'].array[:]
+        self.vec['f'].array[:] /= self.vec['f0'].array[:]
         self.vec['du'].array[:] /= self.vec['u0'].array[:]
         self.vec['df'].array[:] /= self.vec['f0'].array[:]
         if self.mode == 'rev':
@@ -466,6 +474,14 @@ class System(object):
 
     def compute_derivatives(self, mode, var, ind=0, output=True):
         """ Solves derivatives of system (direct/adjoint) """
+        self.vec['du'].array[:] = 0.0
+        self.vec['df'].array[:] = 0.0
+        for elemsystem in self.subsystems['elem']:
+            sys = elemsystem.name, elemsystem.copy
+            for arg in self.vec['dp'][sys]:
+                if self.variables[arg] is not None:
+                    self.vec['dp'][sys][arg][:] = 0.0     
+
         self.set_mode(mode, output)
         self.linearize()
 
@@ -483,6 +499,14 @@ class System(object):
         return self.sol_vec
 
     def check_derivatives(self, mode, elemsys, arguments=None):
+        self.vec['du'].array[:] = 0.0
+        self.vec['df'].array[:] = 0.0
+        for elemsystem in self.subsystems['elem']:
+            sys = elemsystem.name, elemsystem.copy
+            for arg in self.vec['dp'][sys]:
+                if self.variables[arg] is not None:
+                    self.vec['dp'][sys][arg][:] = 0.0    
+
         elemsystem = self(elemsys)
         if elemsystem is None:
             return
@@ -526,6 +550,7 @@ class System(object):
             y = numpy.array(vec['df'].array)
 
             self.set_mode('rev')
+            elemsystem.rhs_vec.array[:] = 0.0
             elemsystem.apply_dFdpu(arguments)
 
             xTATy = 0
