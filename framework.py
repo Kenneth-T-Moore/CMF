@@ -581,10 +581,10 @@ class System(object):
 
             print
             for arg in arguments:
+                fwd_val = self.check_derivatives('fwd', [name, copy], [arg]) if fwd else 0
+                rev_val = self.check_derivatives('rev', [name, copy], [arg]) if rev else 0
                 print ('%' + str(length) + 's %3i %13s %17.10e %17.10e') % \
-                    (name, copy, arg[0],
-                     self.check_derivatives('fwd', [name, copy], [arg]),
-                     self.check_derivatives('rev', [name, copy], [arg]))
+                    (name, copy, arg[0], fwd_val, rev_val)
 
     def print_solution(self, dat='u', length=14):
         """ Print min, average, and max of all variables """
