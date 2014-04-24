@@ -121,6 +121,7 @@ class System(object):
             self.output = False
         else:
             self.output = self.kwargs['output']
+        self.output_global = False
 
         methods = {'NL': 'NEWTON',
                    'LN': 'KSP_PC',
@@ -389,7 +390,8 @@ class System(object):
         kwargs = self.kwargs
         self.solvers['LN'][kwargs['PC']](ilimit=kwargs['PC_ilimit'],
                                          atol=kwargs['PC_atol'],
-                                         rtol=kwargs['PC_rtol'])
+                                         rtol=kwargs['PC_rtol'],
+                                         space='    PC')
 
     def solve_line_search(self):
         """ Apply line search """
@@ -421,7 +423,7 @@ class System(object):
         self.rhs_vec = self.vec[{'fwd': 'df', 'rev': 'du'}[mode]]
 
         if output is not None:
-            self.output = output
+            self.output_global = output
 
         for subsystem in self.subsystems['local']:
             subsystem.set_mode(mode, output)
@@ -469,13 +471,13 @@ class System(object):
         for subsystem in self.subsystems['local']:
             subsystem.local_initialize()
 
-    def compute(self, output=None):
+    def compute(self, output=False):
         """ Solves system """
         self.set_mode('fwd', output)
         self.solve_F()
         return self.vec['u']
 
-    def compute_derivatives(self, mode, var, ind=0, output=None):
+    def compute_derivatives(self, mode, var, ind=0, output=False):
         """ Solves derivatives of system (direct/adjoint) """
         self.set_mode(mode, output)
         self.rhs_vec.array[:] = 0.0
@@ -521,7 +523,7 @@ class System(object):
                     arguments.append(arg)
 
         if mode == 'fwd':
-            self.set_mode('fwd')
+            self.set_mode('fwd', False)
 
             for var in elemsystem.variables:
                 if var in arguments:
@@ -538,7 +540,7 @@ class System(object):
             return numpy.linalg.norm(derivs_user - derivs_FD) / \
                 numpy.sqrt(self.vec['u'].array.shape[0])
         elif mode == 'rev':
-            self.set_mode('fwd')
+            self.set_mode('fwd', False)
 
             for var in elemsystem.variables:
                 if var in arguments:
@@ -550,7 +552,7 @@ class System(object):
             elemsystem.apply_dFdpu(arguments)
             y = numpy.array(vec['df'].array)
 
-            self.set_mode('rev')
+            self.set_mode('rev', False)
             elemsystem.rhs_vec.array[:] = 0.0
             elemsystem.apply_dFdpu(arguments)
 
@@ -938,9 +940,11 @@ class Solver(object):
         self._system = system
         self.info = ''
         self.alpha = 0
+        self.space = ''
 
-    def __call__(self, ilimit=10, atol=1e-6, rtol=1e-4):
+    def __call__(self, ilimit=10, atol=1e-6, rtol=1e-4, space=''):
         """ Runs the iterator; overwritten for some solvers """
+        self.space = space
         self._iterator(ilimit, atol, rtol)
 
     def _iterator(self, ilimit, atol, rtol):
@@ -965,10 +969,10 @@ class Solver(object):
     def print_info(self, counter, residual):
         """ Print output from an iteration """
         system = self._system
-        if system.comm.rank == 0 and system.output:
+        if system.comm.rank == 0 and system.output and system.output_global:
             print ('%' + str(3*system.depth) + 's' +
                    '[%-5s,%3i] %s %3i | %.8e %s') \
-                   % ('', system.name, system.copy, self.METHOD,
+                   % ('', system.name, system.copy, self.space + self.METHOD,
                       counter, residual, self.info)
 
 
@@ -1108,7 +1112,7 @@ class LinearSolver(Solver):
 class Identity(LinearSolver):
     """ Identity mapping; no preconditioning """
 
-    def __call__(self, ilimit=10, atol=1e-6, rtol=1e-4):
+    def __call__(self, ilimit=10, atol=1e-6, rtol=1e-4, space=''):
         """ Just copy the rhs to the sol vector """
         system = self._system
         system.sol_vec.array[:] = system.rhs_vec.array[:]
@@ -1147,7 +1151,7 @@ class KSP(LinearSolver):
         self.ksp = PETSc.KSP().create(comm=system.comm)
         self.ksp.setOperators(jac_mat)
         self.ksp.setType('fgmres')
-        self.ksp.setGMRESRestart(10)
+        self.ksp.setGMRESRestart(1000)
         self.ksp.setPCSide(PETSc.PC.Side.RIGHT)
         self.ksp.setMonitor(self.Monitor(self))
             
@@ -1155,9 +1159,10 @@ class KSP(LinearSolver):
         pc_mat.setType('python')
         pc_mat.setPythonContext(self)
 
-    def __call__(self, ilimit=10, atol=1e-6, rtol=1e-4):
+    def __call__(self, ilimit=10, atol=1e-6, rtol=1e-4, space=''):
         """ Run KSP solver """
         system = self._system
+        self.space = space
         self.ksp.setTolerances(max_it=ilimit, atol=atol, rtol=rtol)
         self._initialize()
         self.ksp.solve(system.rhs_buf, system.sol_buf)
