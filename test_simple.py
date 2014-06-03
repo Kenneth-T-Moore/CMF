@@ -38,7 +38,7 @@ class VarA(ImplicitSystem):
                 da[0] = dFda * df[0]
             if self.get_id('b') in arguments:
                 db[0] = dFdb * df[0]
-                
+
 
 class VarB(ImplicitSystem):
 
@@ -85,8 +85,10 @@ main = SerialSystem('main', subsystems=[
 
 
 print main.compute()
+print 'fwd'
 print main.compute_derivatives('fwd', 'a', output=False)
 print main.compute_derivatives('fwd', 'b', output=False)
+print 'rev'
 print main.compute_derivatives('rev', 'a', output=False)
 print main.compute_derivatives('rev', 'b', output=False)
 
